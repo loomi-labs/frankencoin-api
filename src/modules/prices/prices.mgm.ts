@@ -18,4 +18,11 @@ export const ContractWhitelist: ERC20Info[] = [
 		symbol: 'VCHF',
 		decimals: 18,
 	},
+	{
+		chainId: ChainMain.mainnet.id,
+		address: '0xBD4DfC058eb95b8De5ceAF39966A1a70F5556F78',
+		name: 'AllUnity CHF',
+		symbol: 'CHFAU',
+		decimals: 6,
+	},
 ];

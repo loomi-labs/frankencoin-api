@@ -1,4 +1,5 @@
 import { ADDRESS, ChainId, ChainMain, SupportedChains } from '@frankencoin/zchf';
+import { CONFIG } from 'app.config';
 import { mainnet, Chain } from 'viem/chains';
 import chains from 'viem/chains';
 
@@ -11,7 +12,7 @@ export function ExplorerTxUrl(tx: string, chain: Chain = mainnet): string {
 }
 
 export function AppUrl(path: string, chain: Chain = mainnet): string {
-	return `${chain.id == 1 ? 'https://app.frankencoin.com' : 'https://app.test.frankencoin.com'}${path}`;
+	return `${CONFIG.app ?? 'https://app.frankencoin.com'}${path}`;
 }
 
 export const getChain = (id: ChainId | number): Chain => {
