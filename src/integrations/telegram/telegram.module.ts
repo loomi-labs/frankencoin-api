@@ -7,6 +7,7 @@ import { EcosystemModule } from 'modules/ecosystem/ecosystem.module';
 import { PositionsModule } from 'modules/positions/positions.module';
 import { PricesModule } from 'modules/prices/prices.module';
 import { SavingsModule } from 'modules/savings/savings.module';
+import { AuthModule } from 'modules/auth/auth.module';
 import { TelegramService } from './telegram.service';
 
 @Module({
@@ -19,6 +20,7 @@ import { TelegramService } from './telegram.service';
 		SavingsModule,
 		AnalyticsModule,
 		BridgeModule,
+		AuthModule,
 	],
 	providers: [TelegramService],
 	exports: [TelegramService],

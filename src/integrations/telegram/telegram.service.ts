@@ -36,6 +36,7 @@ import { CCIPProposalMessage } from './messages/CCIPProposal.message';
 import { CCIPProposalDeniedMessage } from './messages/CCIPProposalDenied.message';
 import { CCIPProposalEnactedMessage } from './messages/CCIPProposalEnacted.message';
 import { CCIPRateLimitMessage } from './messages/CCIPRateLimit.message';
+import { AuthService } from 'modules/auth/auth.service';
 
 @Injectable()
 export class TelegramService {
@@ -45,6 +46,7 @@ export class TelegramService {
 	private telegramHandles: string[] = ['/MintingUpdates', '/PriceAlerts', '/WeeklyInfos', '/help'];
 	private telegramState: TelegramState;
 	private telegramGroupState: TelegramGroupState;
+	private userAlertCooldown = new Map<string, { alertTimestamp: number; warningTimestamp: number; lowestTimestamp: number; lowestPrice: number }>();
 
 	constructor(
 		private readonly prisma: PrismaService,
@@ -55,7 +57,8 @@ export class TelegramService {
 		private readonly prices: PricesService,
 		private readonly challenge: ChallengesService,
 		private readonly analytics: AnalyticsService,
-		private readonly bridge: BridgeService
+		private readonly bridge: BridgeService,
+		private readonly authService: AuthService
 	) {
 		this.telegramState = {
 			minterApplied: this.startUpTime,
@@ -496,6 +499,92 @@ export class TelegramService {
 				this.sendMessageAll(CCIPRateLimitMessage(chain));
 			}
 		}
+
+		// PERSONAL USER ALERTS — DM users based on their watched addresses
+		const userAlerts = await this.prisma.safeExecute(() => this.prisma.telegramUserAlert.findMany());
+		if (!userAlerts?.length) return;
+
+		const alertsByUser = new Map<string, typeof userAlerts>();
+		for (const alert of userAlerts) {
+			if (!alertsByUser.has(alert.telegramId)) alertsByUser.set(alert.telegramId, []);
+			alertsByUser.get(alert.telegramId).push(alert);
+		}
+
+		const allPositions = Object.values(this.position.getPositionsOpen().map);
+		const pricesMap = this.prices.getPricesMapping();
+
+		const THRES_LOWEST = 1;
+		const THRES_ALERT = 1.05;
+		const THRES_WARN = 1.1;
+		const DELAY_LOWEST = 2 * 60 * 60 * 1000;
+		const DELAY_ALERT = 12 * 60 * 60 * 1000;
+		const DELAY_WARNING = 24 * 60 * 60 * 1000;
+
+		for (const [telegramId, alerts] of alertsByUser) {
+			const watchedPositions = alerts.filter((a) => a.type === 'position').map((a) => a.address);
+			const watchedOwners = alerts.filter((a) => a.type === 'owner').map((a) => a.address);
+			const watchedCollateral = alerts.filter((a) => a.type === 'collateral').map((a) => a.address);
+
+			for (const p of allPositions) {
+				const posAddr = normalizeAddress(p.position);
+				const isWatched =
+					watchedPositions.includes(posAddr) ||
+					watchedOwners.includes(normalizeAddress(p.owner)) ||
+					watchedCollateral.includes(normalizeAddress(p.collateral));
+				if (!isWatched) continue;
+
+				const priceQuery = pricesMap[normalizeAddress(p.collateral)];
+				if (!priceQuery || priceQuery.timestamp === 0) continue;
+
+				const posPrice = parseFloat(formatUnits(BigInt(p.price), 36 - p.collateralDecimals));
+				const price = priceQuery.price.chf;
+				if (posPrice * THRES_WARN < price) continue;
+
+				const cooldownKey = `${telegramId}:${posAddr}`;
+				let last = this.userAlertCooldown.get(cooldownKey) ?? {
+					alertTimestamp: 0,
+					warningTimestamp: 0,
+					lowestTimestamp: 0,
+					lowestPrice: 0,
+				};
+
+				const fakeLastState = {
+					warningPrice: 0,
+					warningTimestamp: last.warningTimestamp,
+					alertPrice: 0,
+					alertTimestamp: last.alertTimestamp,
+					lowestPrice: last.lowestPrice,
+					lowestTimestamp: last.lowestTimestamp,
+				};
+
+				if (price < posPrice * THRES_LOWEST) {
+					if (last.lowestTimestamp + DELAY_LOWEST < Date.now()) {
+						if (last.lowestPrice === 0 || last.lowestPrice * 0.98 > price) {
+							!isSoftStart && (await this.sendMessage(telegramId, PositionPriceLowest(p, priceQuery, fakeLastState)));
+							last.lowestPrice = price;
+						}
+						last.lowestTimestamp = Date.now();
+					}
+				} else if (price < posPrice * THRES_ALERT) {
+					if (last.alertTimestamp + DELAY_ALERT < Date.now()) {
+						!isSoftStart && (await this.sendMessage(telegramId, PositionPriceAlert(p, priceQuery, fakeLastState)));
+						last.alertTimestamp = Date.now();
+					}
+				} else if (price < posPrice * THRES_WARN) {
+					if (last.warningTimestamp + DELAY_WARNING < Date.now()) {
+						!isSoftStart && (await this.sendMessage(telegramId, PositionPriceWarning(p, priceQuery, fakeLastState)));
+						last.warningTimestamp = Date.now();
+					}
+				}
+
+				if (price > posPrice * THRES_ALERT && last.lowestTimestamp > 0) {
+					last.lowestTimestamp = 0;
+					last.lowestPrice = 0;
+				}
+
+				this.userAlertCooldown.set(cooldownKey, last);
+			}
+		}
 	}
 
 	upsertTelegramGroup(id: number | string): boolean {
@@ -566,6 +655,7 @@ export class TelegramService {
 				{ command: 'start', description: 'Connect this chat & show info' },
 				{ command: 'help', description: 'Show status & subscriptions' },
 				{ command: 'subscribe', description: 'Manage alert subscriptions' },
+				{ command: 'sessions', description: 'View & manage linked app sessions' },
 			]);
 			this.logger.log('Bot command menu registered');
 		} catch (e) {
@@ -591,19 +681,62 @@ export class TelegramService {
 		this.bot.on('message', async (m) => {
 			if (this.upsertTelegramGroup(m.chat.id) == true) await this.writeBackupGroups([String(m.chat.id)]);
 
-			if (m.text === '/start' || m.text === '/help') {
+			if (m.text?.startsWith('/start') || m.text === '/help') {
+				const param = m.text?.startsWith('/start ') ? m.text.slice(7).trim() : null;
+				if (param?.startsWith('login_')) {
+					const jti = param.slice(6);
+					const telegramId = m.from?.id?.toString();
+					if (jti && telegramId) {
+						const linked = await this.authService.linkSession(jti, telegramId);
+						await this.sendMessage(
+							m.chat.id,
+							linked ? '✅ Successfully linked! Return to the app.' : '⚠️ Link expired or already used.'
+						);
+						return;
+					}
+				}
 				await this.sendMessage(
 					m.chat.id,
 					HelpMessage(this.telegramHandles, this.telegramGroupState.subscription[m.chat.id.toString()] || {})
 				);
 			} else if (m.text === '/subscribe') {
 				await this.sendSubscriptionMenu(m.chat.id);
+			} else if (m.text === '/sessions') {
+				const telegramId = m.from?.id?.toString();
+				if (!telegramId) return;
+				const count = await this.authService.getSessionCount(telegramId);
+				try {
+					await this.bot.sendMessage(m.chat.id, `📱 You have *${count}* linked session${count !== 1 ? 's' : ''}.`, {
+						parse_mode: 'Markdown',
+						reply_markup:
+							count > 0
+								? { inline_keyboard: [[{ text: '🗑 Remove all sessions', callback_data: 'sessions:remove_all' }]] }
+								: undefined,
+					});
+				} catch (e) {
+					this.logger.warn(`/sessions failed: ${e?.message}`);
+				}
 			} else {
 				this.telegramHandles.forEach((h) => toggle(h, m));
 			}
 		});
 
 		this.bot.on('callback_query', async (query) => {
+			if (query.data === 'sessions:remove_all') {
+				const telegramId = query.from?.id?.toString();
+				if (telegramId) {
+					await this.authService.removeAllSessions(telegramId);
+					await this.bot.answerCallbackQuery(query.id, { text: '✅ All sessions removed.' });
+					try {
+						await this.bot.editMessageText('🗑 All linked sessions removed.', {
+							chat_id: query.message.chat.id,
+							message_id: query.message.message_id,
+						});
+					} catch (_) {}
+				}
+				return;
+			}
+
 			if (!query.data?.startsWith('sub:')) return;
 			const handle = query.data.replace('sub:', '');
 			const chatId = query.message.chat.id.toString();

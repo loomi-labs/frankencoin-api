@@ -65,3 +65,27 @@ model EcosystemSupply {
 
   @@map("ecosystem_supply")
 }
+
+// Telegram app ↔ bot link sessions (one per browser session, many per Telegram user)
+model TelegramSession {
+  jti        String    @id
+  telegramId String?
+  status     String    @default("unlinked")
+  linkedAt   DateTime?
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+
+  @@map("telegram_sessions")
+}
+
+// Personalized alerts per Telegram user — DMs only, not group broadcasts
+model TelegramUserAlert {
+  id         String   @id @default(uuid())
+  telegramId String
+  type       String   // "position" | "owner" | "collateral"
+  address    String   // normalized lowercase
+  createdAt  DateTime @default(now())
+
+  @@unique([telegramId, type, address])
+  @@map("telegram_user_alerts")
+}
