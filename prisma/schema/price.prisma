@@ -1,0 +1,27 @@
+// Price query cache (current prices) - one row per token address
+model PriceCache {
+  address   String   @id
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  @@map("price_cache")
+}
+
+// Price history - one row per timestamp
+model PriceHistory {
+  timestamp BigInt   @id
+  prices    Json
+  updatedAt DateTime @updatedAt
+
+  @@map("price_history")
+}
+
+// Price history ratio - one row per timestamp
+model PriceHistoryRatio {
+  timestamp                  BigInt   @id
+  collateralRatioByFreeFloat Float
+  collateralRatioBySupply    Float
+  updatedAt                  DateTime @updatedAt
+
+  @@map("price_history_ratio")
+}

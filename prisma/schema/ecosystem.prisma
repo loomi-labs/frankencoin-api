@@ -1,0 +1,8 @@
+// Ecosystem total supply history
+model EcosystemSupply {
+  timestamp BigInt   @id
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  @@map("ecosystem_supply")
+}
