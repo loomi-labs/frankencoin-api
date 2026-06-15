@@ -156,7 +156,7 @@
 				<thead>
 					<tr>
 						<th>Rank</th><th>Account</th><th>Chain</th><th>Balance (ZCHF)</th>
-						<th>Total Saved</th><th>Interest Earned</th><th>Withdrawn</th><th>Last Updated</th>
+						<th>Interest Earned</th><th>Unclaimed</th><th>Last Updated</th>
 					</tr>
 				</thead>
 				<tbody id="ranked-table"></tbody>
@@ -166,6 +166,49 @@
 		<script>
 		const CHAIN_NAMES  = { 1: 'Ethereum', 100: 'Gnosis', 8453: 'Base', 10: 'Optimism', 137: 'Polygon' };
 		const MODULE_COLORS = { 'Savings': '#2563eb', 'Mint Rate': '#d97706' };
+		const CHAIN_EXPLORERS = {
+			1:     'https://etherscan.io',
+			100:   'https://gnosisscan.io',
+			8453:  'https://basescan.org',
+			10:    'https://optimistic.etherscan.io',
+			137:   'https://polygonscan.com',
+			42161: 'https://arbiscan.io',
+			43114: 'https://snowtrace.io',
+			146:   'https://sonicscan.org',
+		};
+
+		function explorerAddr(chainId, address) {
+			const base = CHAIN_EXPLORERS[Number(chainId)] || 'https://etherscan.io';
+			return `${base}/address/${address}`;
+		}
+
+		const CHAIN_RPCS = {
+			1:     'https://ethereum.publicnode.com',
+			100:   'https://gnosis.publicnode.com',
+			8453:  'https://base.publicnode.com',
+			10:    'https://optimism.publicnode.com',
+			137:   'https://polygon-bor.publicnode.com',
+			42161: 'https://arbitrum.publicnode.com',
+			43114: 'https://avalanche-c-chain.publicnode.com',
+			146:   'https://sonic.publicnode.com',
+		};
+
+		// accruedInterest(address) → selector 0x77267ec3
+		async function callAccruedInterest(chainId, moduleAddr, account) {
+			const rpc = CHAIN_RPCS[Number(chainId)];
+			if (!rpc || !moduleAddr || !account) return null;
+			const data = '0x77267ec3' + '000000000000000000000000' + account.slice(2).toLowerCase();
+			try {
+				const res = await fetch(rpc, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_call', params: [{ to: moduleAddr, data }, 'latest'], id: 1 }),
+				});
+				const json = await res.json();
+				if (json.error || !json.result || json.result === '0x') return null;
+				return BigInt(json.result);
+			} catch { return null; }
+		}
 
 		let chartRates = null;
 		let chartSavingsHistory = null;
@@ -257,7 +300,29 @@
 			renderUnsyncedTable(ratesData);
 			renderRatesTable(ratesData);
 			renderProposalsTable(proposalsData);
-			renderRanked(ranked);
+			// build chainId → savings module address from info.status (skip Mint Rate)
+			const chainModuleMap = {};
+			for (const [chainId, modules] of Object.entries(info.status || {}))
+				for (const [moduleAddr] of Object.entries(modules))
+					if (moduleLabel(chainId, moduleAddr) !== 'Mint Rate' && !chainModuleMap[Number(chainId)])
+						chainModuleMap[Number(chainId)] = moduleAddr;
+
+			// render immediately with loading state, then fill unclaimed via eth_call
+			renderRanked(ranked, {}, true);
+			setStatus('Fetching unclaimed interest…', '#d97706');
+
+			const top20 = Array.isArray(ranked) ? ranked.slice(0, 20) : [];
+			const unclaimedResults = await Promise.allSettled(
+				top20.map(r => callAccruedInterest(r.chainId, chainModuleMap[r.chainId], r.account))
+			);
+			const unclaimedMap = {};
+			top20.forEach((r, i) => {
+				const res = unclaimedResults[i];
+				if (res.status === 'fulfilled' && res.value != null)
+					unclaimedMap[`${r.chainId}:${r.account}`] = res.value.toString();
+			});
+			setStatus('Loaded', '#16a34a');
+			renderRanked(ranked, unclaimedMap, false);
 		}
 
 		function renderStats(info) {
@@ -285,7 +350,7 @@
 					const block = document.createElement('div');
 					block.className = 'chain-block';
 					block.innerHTML = `
-						<h3>${seriesLabel(chainId, module)} — <span style="color:#2563eb" title="${module}">${shortAddr(module)}</span>
+						<h3>${seriesLabel(chainId, module)} — <a href="${explorerAddr(chainId, module)}" target="_blank" style="color:#2563eb;text-decoration:none" title="${module}">${shortAddr(module)}</a>
 							&nbsp;<span style="color:#888;font-size:0.75rem">updated ${ts(s.updated)}</span></h3>
 						<div class="grid-2">
 							<table>
@@ -694,21 +759,30 @@
 				}).join('');
 		}
 
-		function renderRanked(ranked) {
+		function renderRanked(ranked, unclaimedMap, loading = false) {
 			if (!Array.isArray(ranked)) return;
 			const tbody = document.getElementById('ranked-table');
-			tbody.innerHTML = ranked.slice(0, 20).length === 0
-				? '<tr><td colspan="8" style="color:#888;padding:8px 10px">No data</td></tr>'
-				: ranked.slice(0, 20).map((r, i) => `<tr>
-					<td>${i + 1}</td>
-					<td style="color:#2563eb" title="${r.account}">${shortAddr(r.account)}</td>
-					<td><span class="tag tag-blue">${chainLabel(r.chainId)}</span></td>
-					<td>${fmt(r.balance)}</td>
-					<td>${fmt(r.save)}</td>
-					<td style="color:#16a34a">${fmt(r.interest)}</td>
-					<td style="color:#dc2626">${fmt(r.withdraw)}</td>
-					<td style="color:#aaa">${ts(r.updated)}</td>
-				</tr>`).join('');
+			const rows = ranked.slice(0, 20);
+			tbody.innerHTML = rows.length === 0
+				? '<tr><td colspan="7" style="color:#888;padding:8px 10px">No data</td></tr>'
+				: rows.map((r, i) => {
+					const key = `${r.chainId}:${r.account}`;
+					const unclaimed = unclaimedMap?.[key];
+					const unclaimedCell = loading
+						? '<td style="color:#aaa">…</td>'
+						: unclaimed == null
+							? '<td style="color:#aaa">—</td>'
+							: `<td style="color:#f59e0b">${fmt(unclaimed)}</td>`;
+					return `<tr>
+						<td>${i + 1}</td>
+						<td title="${r.account}"><a href="${explorerAddr(r.chainId, r.account)}" target="_blank" style="color:#2563eb;text-decoration:none">${shortAddr(r.account)}</a></td>
+						<td><span class="tag tag-blue">${chainLabel(r.chainId)}</span></td>
+						<td>${fmt(r.balance)}</td>
+						<td style="color:#16a34a">${fmt(r.interest)}</td>
+						${unclaimedCell}
+						<td style="color:#aaa">${ts(r.updated)}</td>
+					</tr>`;
+				}).join('');
 		}
 
 		load();

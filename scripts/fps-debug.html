@@ -48,11 +48,18 @@
 				text-align: left; padding: 6px 10px;
 				background: #f0f0f0; color: #444;
 				border-bottom: 1px solid #ddd;
+				position: sticky; top: 0; z-index: 1;
 			}
 			td { padding: 5px 10px; border-bottom: 1px solid #eee; }
 			td.pos     { color: #16a34a; }
 			td.neg     { color: #dc2626; }
 			td.neutral { color: #475569; }
+			.tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+			.tab-btn {
+				background: #f0f0f0; color: #555; border: 1px solid #ddd;
+				padding: 4px 14px; border-radius: 4px; cursor: pointer; font-family: monospace; font-size: 0.8rem;
+			}
+			.tab-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
 		</style>
 	</head>
 	<body>
@@ -86,12 +93,17 @@
 			</div>
 		</div>
 
-		<!-- CHART 3: realized + annual combined -->
+		<!-- CHART 3: realized earnings rolling window + annual -->
 		<div class="section">
-			<h2>Realized Net Earnings (rolling 365d) &amp; Annual Net Earnings (annualized projection)</h2>
+			<h2>Net Earnings</h2>
+			<div class="tabs">
+				<button class="tab-btn active" onclick="switchEarnings(365, this)">365d Rolling</button>
+				<button class="tab-btn" onclick="switchEarnings(90, this)">90d Rolling</button>
+				<button class="tab-btn" onclick="switchEarnings(30, this)">30d Rolling</button>
+			</div>
 			<p class="note">
-				<span style="color:#7c3aed">■</span> <b>realizedNetEarnings</b> — rolling 365-day window: <code>(totalInflow − totalOutflow)</code> for the trailing year.
-				Drops occur when a high-earning day rolls out of the window, or when loss events (liquidation shortfalls, bad debt) push outflow above inflow.
+				<span style="color:#7c3aed">■</span> <b>Realized Net Earnings</b> — rolling window sum of <code>(inflow − outflow)</code> per day × FPS supply.
+				365d uses the server-provided value; 90d / 30d are computed client-side from daily Δ earningsPerFPS × supply.
 			</p>
 			<p class="note" style="margin-top:6px">
 				<span style="color:#d97706">■</span> <b>annualNetEarnings</b> — forward projection: implied annual earnings from avg borrow rate × total minted,
@@ -105,7 +117,7 @@
 		<!-- TABLE -->
 		<div class="section">
 			<h2>Per-Day Earnings Table</h2>
-			<div style="overflow-x:auto">
+			<div style="overflow-x:auto; overflow-y:auto; max-height:360px">
 			<table>
 				<thead>
 					<tr>
@@ -129,6 +141,41 @@
 		const DECIMALS   = 1e18;
 		const MULTIPLIER = 3;
 		let charts = {};
+		let earningsState = {};
+
+		function rollingSum(arr, n) {
+			return arr.map((_, i) => {
+				if (i < n - 1) return null;
+				const slice = arr.slice(i - n + 1, i + 1);
+				return slice.every(v => v != null) ? slice.reduce((a, b) => a + b, 0) : null;
+			});
+		}
+
+		function renderEarningsChart(days) {
+			const { labels, rolling365, rolling90, rolling30, annual } = earningsState;
+			if (!labels) return;
+			const data = days === 30 ? rolling30 : days === 90 ? rolling90 : rolling365;
+			makeChart('chart-earnings', 'line', labels, [
+				{
+					label: `Realized Net Earnings (rolling ${days}d)`,
+					data,
+					borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.06)',
+					borderWidth: 1.5, pointRadius: 0, tension: 0.1, fill: true,
+				},
+				{
+					label: 'Annual Net Earnings (annualized projection)',
+					data: annual,
+					borderColor: '#d97706', backgroundColor: 'rgba(217,119,6,0.04)',
+					borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, tension: 0.1, fill: false,
+				},
+			]);
+		}
+
+		function switchEarnings(days, btn) {
+			document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+			btn.classList.add('active');
+			renderEarningsChart(days);
+		}
 
 		function setStatus(msg, color) {
 			const el = document.getElementById('status');
@@ -275,22 +322,21 @@
 				},
 			]);
 
-			makeChart('chart-earnings', 'line', labels, [
-				{
-					label: 'Realized Net Earnings (rolling 365d)',
-					data: realizedNet,
-					borderColor: '#7c3aed',
-					backgroundColor: 'rgba(124,58,237,0.06)',
-					borderWidth: 1.5, pointRadius: 0, tension: 0.1, fill: true,
-				},
-				{
-					label: 'Annual Net Earnings (annualized projection)',
-					data: annualNetEarnings,
-					borderColor: '#d97706',
-					backgroundColor: 'rgba(217,119,6,0.04)',
-					borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, tension: 0.1, fill: false,
-				},
-			]);
+			const dailyProtocolEarnings = dailyEPS.map((v, i) =>
+				v != null && fpsTotalSupply[i] != null ? v * fpsTotalSupply[i] : null
+			);
+
+			earningsState = {
+				labels,
+				rolling365: realizedNet,
+				rolling90:  rollingSum(dailyProtocolEarnings, 90),
+				rolling30:  rollingSum(dailyProtocolEarnings, 30),
+				annual:     annualNetEarnings,
+			};
+
+			// reset tab selection to 365d on each load
+			document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
+			renderEarningsChart(365);
 
 			const tbody = document.getElementById('table-body');
 			tbody.innerHTML = entries.map((e, i) => {
