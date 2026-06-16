@@ -9,7 +9,23 @@ var BidsQueryType = /* @__PURE__ */ ((BidsQueryType2) => {
   BidsQueryType2["Succeeded"] = "Succeeded";
   return BidsQueryType2;
 })(BidsQueryType || {});
+
+// src/modules/auth/auth.types.ts
+var NOTIFICATION_ALERT_TYPES = [
+  "mintingUpdates",
+  "positionExpiry",
+  "priceAlerts",
+  "challenge",
+  "allPositions",
+  "positionProposal",
+  "minterProposal",
+  "ccipProposal",
+  "leadrateProposal",
+  "weeklyInfo",
+  "equityEvents"
+];
 export {
   BidsQueryType,
-  ChallengesQueryStatus
+  ChallengesQueryStatus,
+  NOTIFICATION_ALERT_TYPES
 };

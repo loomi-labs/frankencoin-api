@@ -10,4 +10,5 @@ export * from '../src/modules/savings/savings.referrer.types';
 export * from '../src/modules/positions/positions.types';
 export * from '../src/modules/prices/prices.types';
 export * from '../src/integrations/telegram/telegram.types';
+export * from '../src/modules/auth/auth.types';
 export * from '../src/modules/transfer/transfer.reference.types';

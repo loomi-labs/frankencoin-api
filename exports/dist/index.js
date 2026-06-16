@@ -21,7 +21,8 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var exports_exports = {};
 __export(exports_exports, {
   BidsQueryType: () => BidsQueryType,
-  ChallengesQueryStatus: () => ChallengesQueryStatus
+  ChallengesQueryStatus: () => ChallengesQueryStatus,
+  NOTIFICATION_ALERT_TYPES: () => NOTIFICATION_ALERT_TYPES
 });
 module.exports = __toCommonJS(exports_exports);
 
@@ -36,8 +37,24 @@ var BidsQueryType = /* @__PURE__ */ ((BidsQueryType2) => {
   BidsQueryType2["Succeeded"] = "Succeeded";
   return BidsQueryType2;
 })(BidsQueryType || {});
+
+// src/modules/auth/auth.types.ts
+var NOTIFICATION_ALERT_TYPES = [
+  "mintingUpdates",
+  "positionExpiry",
+  "priceAlerts",
+  "challenge",
+  "allPositions",
+  "positionProposal",
+  "minterProposal",
+  "ccipProposal",
+  "leadrateProposal",
+  "weeklyInfo",
+  "equityEvents"
+];
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   BidsQueryType,
-  ChallengesQueryStatus
+  ChallengesQueryStatus,
+  NOTIFICATION_ALERT_TYPES
 });
