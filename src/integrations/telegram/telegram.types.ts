@@ -1,5 +1,3 @@
-import { Address } from 'viem';
-
 // @dev: timestamps of last trigger emits
 export type TelegramState = {
 	minterApplied: number;
@@ -9,8 +7,9 @@ export type TelegramState = {
 	positions: number;
 	positionsDenied: number;
 	positionsExpiringSoon1: number;
+	positionsExpiringSoon7: number;
 	positionsExpired: number;
-	positionsPriceAlert: Map<Address, PositionPriceAlertState>;
+	positionsPriceAlert: Map<string, PositionPriceAlertState>;
 	mintingUpdates: number;
 	challenges: number;
 	bids: number;
@@ -22,21 +21,4 @@ export type TelegramState = {
 	ccipRateLimit: number;
 };
 
-export type PositionPriceAlertState = {
-	warningPrice: number; // e.g. below 110%
-	warningTimestamp: number;
-	alertPrice: number; // e.g. below 105%
-	alertTimestamp: number;
-	lowestPrice: number;
-	lowestTimestamp: number;
-};
-
-export type TelegramGroupState = {
-	apiVersion: string;
-	createdAt: number;
-	updatedAt: number;
-	groups: string[];
-	subscription: {
-		[chatId: string]: { [handle: string]: boolean };
-	};
-};
+export type PositionPriceAlertState = { alertTimestamp: number; warningTimestamp: number; lowestTimestamp: number; lowestPrice: number };

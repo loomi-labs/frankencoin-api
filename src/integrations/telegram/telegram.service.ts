@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
 import { PositionsService } from 'modules/positions/positions.service';
-import { TelegramGroupState, TelegramState } from './telegram.types';
+import { TelegramState } from './telegram.types';
 import { EcosystemMinterService } from 'modules/ecosystem/ecosystem.minter.service';
 import { MinterProposalMessage } from './messages/MinterProposal.message';
 import { PositionProposalMessage } from './messages/PositionProposal.message';
@@ -43,10 +43,7 @@ export class TelegramService {
 	private readonly startUpTime = Date.now();
 	private readonly logger = new Logger(this.constructor.name);
 	private readonly bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
-	private telegramHandles: string[] = ['/MintingUpdates', '/PriceAlerts', '/WeeklyInfos', '/help'];
 	private telegramState: TelegramState;
-	private telegramGroupState: TelegramGroupState;
-	private userAlertCooldown = new Map<string, { alertTimestamp: number; warningTimestamp: number; lowestTimestamp: number; lowestPrice: number }>();
 
 	constructor(
 		private readonly prisma: PrismaService,
@@ -68,6 +65,7 @@ export class TelegramService {
 			positions: this.startUpTime,
 			positionsDenied: this.startUpTime,
 			positionsExpiringSoon1: this.startUpTime,
+			positionsExpiringSoon7: this.startUpTime,
 			positionsExpired: this.startUpTime,
 			positionsPriceAlert: new Map(),
 			mintingUpdates: this.startUpTime,
@@ -81,76 +79,14 @@ export class TelegramService {
 			ccipRateLimit: this.startUpTime,
 		};
 
-		this.telegramGroupState = {
-			apiVersion: process.env.npm_package_version,
-			createdAt: this.startUpTime,
-			updatedAt: this.startUpTime,
-			groups: [],
-			subscription: {},
-		};
-
-		this.readBackupGroups();
-	}
-
-	async readBackupGroups() {
-		this.logger.log('Reading backup groups from database');
-
-		const groups = await this.prisma.safeExecute(() => this.prisma.telegramGroup.findMany());
-
-		if (groups && groups.length > 0) {
-			this.telegramGroupState.groups = groups.map((g) => g.chatId);
-			this.telegramGroupState.subscription = Object.fromEntries(groups.map((g) => [g.chatId, g.subscriptions as any]));
-			this.logger.log(`Telegram group state restored (${groups.length} groups)`);
-		} else {
-			this.logger.log('No telegram groups found, starting fresh');
-		}
-
-		await this.applyListener();
-	}
-
-	async writeBackupGroups(groups: string[] = this.telegramGroupState.groups) {
-		this.telegramGroupState.apiVersion = process.env.npm_package_version;
-		this.telegramGroupState.updatedAt = Date.now();
-
-		await this.prisma.safeExecute(async () => {
-			// Update or create groups
-			for (const chatId of groups) {
-				const subscriptions = this.telegramGroupState.subscription[chatId] || {};
-				await this.prisma.telegramGroup.upsert({
-					where: { chatId },
-					create: {
-						chatId,
-						subscriptions,
-					},
-					update: {
-						subscriptions,
-					},
-				});
-			}
-
-			this.logger.log('Telegram group backup stored in database');
-		});
-	}
-
-	async removeBackupGroups(groups: string[]) {
-		await this.prisma.safeExecute(async () => {
-			// Update or create groups
-			for (const chatId of groups) {
-				await this.prisma.telegramGroup.delete({
-					where: {
-						chatId,
-					},
-				});
-			}
-
-			this.logger.log('Telegram group backup stored in database');
-		});
+		this.applyListener();
 	}
 
 	async sendMessageAll(message: string) {
-		if (this.telegramGroupState.groups.length == 0) return;
-		for (const group of this.telegramGroupState.groups) {
-			await this.sendMessage(group, message);
+		const groups = await this.prisma.safeExecute(() => this.prisma.telegramGroup.findMany());
+		if (!groups?.length) return;
+		for (const group of groups) {
+			await this.sendMessage(group.chatId, message);
 		}
 	}
 
@@ -208,17 +144,15 @@ export class TelegramService {
 
 		this.logger.debug('Updating Telegram');
 
-		// break if no groups are known
-		if (this.telegramGroupState?.groups == undefined) return;
-		if (this.telegramGroupState.groups.length == 0) return;
+		// PROPOSAL ALERTS — no position context, simple type subscription
 
-		// DEFAULT
 		// Minter Proposal
 		const mintersList = this.minter.getMintersList().list.filter((m) => m.applyDate * 1000 > this.telegramState.minterApplied);
 		if (mintersList.length > 0) {
-			this.telegramState.minterApplied = Date.now(); // do first, allows new income to handle next loop
+			this.telegramState.minterApplied = Date.now();
+			const groups = await this.getSubscribedChatIds('minterProposal');
 			for (const minter of mintersList) {
-				this.sendMessageAll(MinterProposalMessage(minter));
+				this.sendMessageGroup(groups, MinterProposalMessage(minter));
 			}
 		}
 
@@ -228,58 +162,151 @@ export class TelegramService {
 			.list.filter((m) => m.denyDate > 0 && m.denyDate * 1000 > this.telegramState.minterVetoed);
 		if (mintersVetoed.length > 0) {
 			this.telegramState.minterVetoed = Date.now();
+			const groups = await this.getSubscribedChatIds('minterProposal');
 			for (const minter of mintersVetoed) {
-				this.sendMessageAll(MinterProposalVetoedMessage(minter));
+				this.sendMessageGroup(groups, MinterProposalVetoedMessage(minter));
 			}
 		}
 
-		// prepare leadrate
+		// Leadrate Proposal
+		const leadrateRates = Object.values(this.leadrate.getInfo().rate[mainnet.id] || {});
 		const leadrateProposal = Object.values(this.leadrate.getInfo().open[mainnet.id] || {}).filter(
 			(p) => p.details.created * 1000 > this.telegramState.leadrateProposal
 		);
-		const leadrateRates = Object.values(this.leadrate.getInfo().rate[mainnet.id] || {});
-		const leadrateApplied = leadrateRates.filter((r) => r.created * 1000 > this.telegramState.leadrateChanged);
-
-		// Leadrate Proposal
 		if (leadrateProposal.length > 0) {
 			this.telegramState.leadrateProposal = Date.now();
+			const groups = await this.getSubscribedChatIds('leadrateProposal');
 			for (const p of leadrateProposal) {
-				this.sendMessageAll(LeadrateProposalMessage(p.details, leadrateRates));
+				this.sendMessageGroup(groups, LeadrateProposalMessage(p.details, leadrateRates));
 			}
 		}
 
 		// Leadrate Changed
+		const leadrateApplied = leadrateRates.filter((r) => r.created * 1000 > this.telegramState.leadrateChanged);
 		if (leadrateApplied.length > 0) {
 			this.telegramState.leadrateChanged = Date.now();
+			const groups = await this.getSubscribedChatIds('leadrateProposal');
 			for (const r of leadrateApplied) {
-				this.sendMessageAll(LeadrateChangedMessage(r));
+				this.sendMessageGroup(groups, LeadrateChangedMessage(r));
 			}
 		}
 
-		// Positions requested
+		// Position Proposals requested
 		const requestedPosition = Object.values(this.position.getPositionsRequests().map).filter(
 			(r) => r.start * 1000 > Date.now() && r.created * 1000 > this.telegramState.positions
 		);
 		if (requestedPosition.length > 0) {
 			this.telegramState.positions = Date.now();
+			const groups = await this.getSubscribedChatIds('positionProposal');
 			for (const p of requestedPosition) {
-				this.sendMessageAll(PositionProposalMessage(p));
+				this.sendMessageGroup(groups, PositionProposalMessage(p));
 			}
 		}
 
-		// Positions denied
+		// Position Proposals denied
 		const deniedPosition = Object.values(this.position.getPositionsDenied().map).filter(
 			(p) => p.denyDate > 0 && p.denyDate * 1000 > this.telegramState.positionsDenied
 		);
 		if (deniedPosition.length > 0) {
 			this.telegramState.positionsDenied = Date.now();
+			const groups = await this.getSubscribedChatIds('positionProposal');
 			for (const p of deniedPosition) {
-				this.sendMessageAll(PositionDeniedMessage(p));
+				this.sendMessageGroup(groups, PositionDeniedMessage(p));
 			}
 		}
 
-		// Positions expiring soon (24 hours)
+		// BRIDGE ALERTS — proposals
+		const newCcipProposals = this.bridge.getPendingProposals().filter((p) => p.created * 1000 > this.telegramState.ccipProposalNew);
+		if (newCcipProposals.length > 0) {
+			this.telegramState.ccipProposalNew = Date.now();
+			const groups = await this.getSubscribedChatIds('ccipProposal');
+			for (const proposal of newCcipProposals) {
+				this.sendMessageGroup(groups, CCIPProposalMessage(proposal));
+			}
+		}
+
+		const deniedCcipProposals = this.bridge
+			.getDeniedProposals()
+			.filter((p) => p.deniedAt * 1000 > this.telegramState.ccipProposalDenied);
+		if (deniedCcipProposals.length > 0) {
+			this.telegramState.ccipProposalDenied = Date.now();
+			const groups = await this.getSubscribedChatIds('ccipProposal');
+			for (const proposal of deniedCcipProposals) {
+				this.sendMessageGroup(groups, CCIPProposalDeniedMessage(proposal));
+			}
+		}
+
+		const enactedCcipProposals = this.bridge
+			.getEnactedProposals()
+			.filter((p) => p.enactedAt * 1000 > this.telegramState.ccipProposalEnacted);
+		if (enactedCcipProposals.length > 0) {
+			this.telegramState.ccipProposalEnacted = Date.now();
+			const groups = await this.getSubscribedChatIds('ccipProposal');
+			for (const proposal of enactedCcipProposals) {
+				this.sendMessageGroup(groups, CCIPProposalEnactedMessage(proposal));
+			}
+		}
+
+		const rateLimitUpdates = this.bridge
+			.getChains()
+			.list.filter((c) => c.rateLimitUpdatedAt !== null && c.rateLimitUpdatedAt * 1000 > this.telegramState.ccipRateLimit);
+		if (rateLimitUpdates.length > 0) {
+			this.telegramState.ccipRateLimit = Date.now();
+			const groups = await this.getSubscribedChatIds('ccipProposal');
+			for (const chain of rateLimitUpdates) {
+				this.sendMessageGroup(groups, CCIPRateLimitMessage(chain));
+			}
+		}
+
+		// GENERAL ALERTS — no position context
+
+		const { logs } = await this.analytics.getTransactionLog(true, 100);
+		const equityMinAmount = 10000;
+		const equityGroups = await this.getSubscribedChatIds('equityEvents');
+
+		const equityInvested = logs
+			.filter((i) => Number(i.timestamp) * 1000 > this.telegramState.equityInvested)
+			.filter((i) => i.kind == 'Equity:Invested')
+			.filter((i) => formatFloat(i.amount, 18) >= equityMinAmount);
+		if (equityInvested.length > 0) {
+			this.telegramState.equityInvested = Date.now();
+			for (const i of equityInvested) {
+				this.sendMessageGroup(equityGroups, EquityInvestedMessage(i));
+			}
+		}
+
+		const equityRedeemed = logs
+			.filter((i) => Number(i.timestamp) * 1000 > this.telegramState.equityRedeemed)
+			.filter((i) => i.kind == 'Equity:Redeemed')
+			.filter((i) => formatFloat(i.amount, 18) >= equityMinAmount);
+		if (equityRedeemed.length > 0) {
+			this.telegramState.equityRedeemed = Date.now();
+			for (const i of equityRedeemed) {
+				this.sendMessageGroup(equityGroups, EquityRedeemedMessage(i));
+			}
+		}
+
+		// POSITION-AWARE ALERTS — recipients = has alert type AND watches the position
+
 		const openPositions = Object.values(this.position.getPositionsOpen().map);
+
+		// Position expiring soon (7 days)
+		const expiringSoonPosition7 = openPositions.filter((p) => {
+			const stateDate = new Date(this.telegramState.positionsExpiringSoon7).getTime();
+			const warningDays = 7 * 24 * 60 * 60 * 1000;
+			const isSoon = p.expiration * 1000 < Date.now() + warningDays;
+			const isNew = isSoon && stateDate + warningDays < p.expiration * 1000;
+			return isSoon && isNew;
+		});
+		if (expiringSoonPosition7.length > 0) {
+			this.telegramState.positionsExpiringSoon7 = Date.now();
+			for (const p of expiringSoonPosition7) {
+				const recipients = await this.getAlertRecipients('positionExpiry', p);
+				this.sendMessageGroup(recipients, PositionExpiringSoonMessage(p));
+			}
+		}
+
+		// Position expiring soon (24 hours)
 		const expiringSoonPosition1 = openPositions.filter((p) => {
 			const stateDate = new Date(this.telegramState.positionsExpiringSoon1).getTime();
 			const warningDays = 1 * 24 * 60 * 60 * 1000;
@@ -290,7 +317,8 @@ export class TelegramService {
 		if (expiringSoonPosition1.length > 0) {
 			this.telegramState.positionsExpiringSoon1 = Date.now();
 			for (const p of expiringSoonPosition1) {
-				this.sendMessageAll(PositionExpiringSoonMessage(p));
+				const recipients = await this.getAlertRecipients('positionExpiry', p);
+				this.sendMessageGroup(recipients, PositionExpiringSoonMessage(p));
 			}
 		}
 
@@ -304,7 +332,8 @@ export class TelegramService {
 		if (expiredPosition.length > 0) {
 			this.telegramState.positionsExpired = Date.now();
 			for (const p of expiredPosition) {
-				this.sendMessageAll(PositionExpiredMessage(p));
+				const recipients = await this.getAlertRecipients('positionExpiry', p);
+				this.sendMessageGroup(recipients, PositionExpiredMessage(p));
 			}
 		} else {
 			// @dev: fixes issue if ponder indexes and stateDate didnt change,
@@ -316,78 +345,20 @@ export class TelegramService {
 			}
 		}
 
-		// Position Price Warning
-		openPositions.forEach((p) => {
-			const posPrice = parseFloat(formatUnits(BigInt(p.price), 36 - p.collateralDecimals));
-			const THRES_LOWEST = 1; // 100%
-			const THRES_ALERT = 1.05; // 105%
-			const THRES_WARN = 1.1; // 110%
-			const DELAY_LOWEST = 2 * 60 * 60 * 1000; // 2h guard
-			const DELAY_ALERT = 12 * 60 * 60 * 1000; // 12h guard
-			const DELAY_WARNING = 24 * 60 * 60 * 1000; // 24h guard
-
-			// price query
-			const priceQuery: PriceQuery | undefined = this.prices.getPricesMapping()[normalizeAddress(p.collateral)];
-			if (priceQuery == undefined || priceQuery?.timestamp == 0) return false; // not found or still searching
-
-			// price check
-			const price = priceQuery.price.chf;
-			if (posPrice * THRES_WARN < price) return false; // below threshold
-
-			// get latest or make available
-			let last = this.telegramState.positionsPriceAlert.get(normalizeAddress(p.position));
-			if (last == undefined) {
-				last = {
-					warningPrice: 0,
-					warningTimestamp: 0,
-					alertPrice: 0,
-					alertTimestamp: 0,
-					lowestPrice: 0,
-					lowestTimestamp: 0,
-				};
+		// Minting updates
+		const requestedMintingUpdates = this.position
+			.getMintingUpdatesList()
+			.list.filter((m) => m.created * 1000 > this.telegramState.mintingUpdates && BigInt(m.mintedAdjusted) > 0n);
+		if (requestedMintingUpdates.length > 0) {
+			this.telegramState.mintingUpdates = Date.now();
+			const prices = this.prices.getPricesMapping();
+			for (const m of requestedMintingUpdates) {
+				const pos = openPositions.find((p) => normalizeAddress(p.position) === normalizeAddress(m.position));
+				if (!pos) continue;
+				const recipients = await this.getAlertRecipients('mintingUpdates', pos);
+				this.sendMessageGroup(recipients, MintingUpdateMessage(m, prices));
 			}
-
-			const groups = this.getSubscribedGroups('/PriceAlerts');
-
-			if (price < posPrice * THRES_LOWEST) {
-				// below 100%
-				if (last.lowestTimestamp + DELAY_LOWEST < Date.now()) {
-					// delay guard passed // @dev: -2% threshold
-					if (last.lowestPrice == 0 || last.lowestPrice * 0.98 > price) {
-						!isSoftStart && this.sendMessageGroup(groups, PositionPriceLowest(p, priceQuery, last));
-						last.lowestPrice = price;
-					}
-					last.lowestTimestamp = Date.now();
-				}
-			} else if (price < posPrice * THRES_ALERT) {
-				// below 105%
-				if (last.alertTimestamp + DELAY_ALERT < Date.now()) {
-					// delay guard passed
-					!isSoftStart && this.sendMessageGroup(groups, PositionPriceAlert(p, priceQuery, last));
-					last.alertTimestamp = Date.now();
-					last.alertPrice = price;
-				}
-			} else if (price < posPrice * THRES_WARN) {
-				// if below 110 -> warning
-				if (last.alertTimestamp + DELAY_WARNING < Date.now()) {
-					if (last.warningTimestamp + DELAY_WARNING < Date.now()) {
-						// delay guard passed
-						!isSoftStart && this.sendMessageGroup(groups, PositionPriceWarning(p, priceQuery, last));
-						last.warningTimestamp = Date.now();
-						last.warningPrice = price;
-					}
-				}
-			}
-
-			// reset lowest price
-			if (price > posPrice * THRES_ALERT && last.lowestTimestamp > 0) {
-				last.lowestTimestamp = 0;
-				last.lowestPrice = 0;
-			}
-
-			// update state
-			this.telegramState.positionsPriceAlert.set(normalizeAddress(p.position), last);
-		});
+		}
 
 		// Challenges started
 		const challengesStarted = Object.values(this.challenge.getChallengesMapping().map).filter(
@@ -397,8 +368,9 @@ export class TelegramService {
 			this.telegramState.challenges = Date.now();
 			for (const c of challengesStarted) {
 				const pos = this.position.getPositionsList().list.find((p) => normalizeAddress(p.position) == normalizeAddress(c.position));
-				if (pos == undefined) return;
-				this.sendMessageAll(ChallengeStartedMessage(pos, c));
+				if (pos == undefined) continue;
+				const recipients = await this.getAlertRecipients('challenge', pos);
+				this.sendMessageGroup(recipients, ChallengeStartedMessage(pos, c));
 			}
 		}
 
@@ -409,170 +381,61 @@ export class TelegramService {
 		if (bidsTaken.length > 0) {
 			this.telegramState.bids = Date.now();
 			for (const b of bidsTaken) {
-				const position = this.position
-					.getPositionsList()
-					.list.find((p) => normalizeAddress(p.position) == normalizeAddress(b.position));
+				const pos = this.position.getPositionsList().list.find((p) => normalizeAddress(p.position) == normalizeAddress(b.position));
 				const challenge = this.challenge
 					.getChallenges()
 					.list.find((c) => normalizeAddress(c.position) == normalizeAddress(b.position) && c.number == b.number);
-				if (position == undefined || challenge == undefined) return;
-				this.sendMessageAll(BidTakenMessage(position, challenge, b));
+				if (pos == undefined || challenge == undefined) continue;
+				const recipients = await this.getAlertRecipients('challenge', pos);
+				this.sendMessageGroup(recipients, BidTakenMessage(pos, challenge, b));
 			}
 		}
 
-		// SUPSCRIPTION
-		// MintingUpdates
-		const requestedMintingUpdates = this.position
-			.getMintingUpdatesList()
-			.list.filter((m) => m.created * 1000 > this.telegramState.mintingUpdates && BigInt(m.mintedAdjusted) > 0n);
-		if (requestedMintingUpdates.length > 0) {
-			this.telegramState.mintingUpdates = Date.now();
-			const prices = this.prices.getPricesMapping();
-			for (const m of requestedMintingUpdates) {
-				const groups = this.getSubscribedGroups('/MintingUpdates');
-				this.sendMessageGroup(groups, MintingUpdateMessage(m, prices));
-			}
-		}
+		// Price alerts — per-user cooldown via positionsPriceAlert keyed by telegramId:posAddr
+		const THRES_LOWEST = 1; // 100%
+		const THRES_ALERT = 1.05; // 105%
+		const THRES_WARN = 1.1; // 110%
+		const DELAY_LOWEST = 2 * 60 * 60 * 1000; // 2h
+		const DELAY_ALERT = 12 * 60 * 60 * 1000; // 12h
+		const DELAY_WARNING = 24 * 60 * 60 * 1000; // 24h
 
-		const { logs } = await this.analytics.getTransactionLog(true, 100);
-		const equityMinAmount = 10000;
-		const equityInvested = logs
-			.filter((i) => Number(i.timestamp) * 1000 > this.telegramState.equityInvested)
-			.filter((i) => i.kind == 'Equity:Invested')
-			.filter((i) => formatFloat(i.amount, 18) >= equityMinAmount);
-		if (equityInvested.length > 0) {
-			this.telegramState.equityInvested = Date.now();
-			for (const i of equityInvested) {
-				this.sendMessageAll(EquityInvestedMessage(i));
-			}
-		}
+		for (const p of openPositions) {
+			const posPrice = parseFloat(formatUnits(BigInt(p.price), 36 - p.collateralDecimals));
+			const priceQuery: PriceQuery | undefined = this.prices.getPricesMapping()[normalizeAddress(p.collateral)];
+			if (priceQuery == undefined || priceQuery.timestamp === 0) continue;
 
-		const equityRedeemed = logs
-			.filter((i) => Number(i.timestamp) * 1000 > this.telegramState.equityRedeemed)
-			.filter((i) => i.kind == 'Equity:Redeemed')
-			.filter((i) => formatFloat(i.amount, 18) >= equityMinAmount);
-		if (equityRedeemed.length > 0) {
-			this.telegramState.equityRedeemed = Date.now();
-			for (const i of equityRedeemed) {
-				this.sendMessageAll(EquityRedeemedMessage(i));
-			}
-		}
+			const price = priceQuery.price.chf;
+			if (posPrice * THRES_WARN < price) continue;
 
-		// BRIDGE ALERTS — new proposals
-		const newCcipProposals = this.bridge.getPendingProposals().filter((p) => p.created * 1000 > this.telegramState.ccipProposalNew);
-		if (newCcipProposals.length > 0) {
-			this.telegramState.ccipProposalNew = Date.now();
-			for (const proposal of newCcipProposals) {
-				this.sendMessageAll(CCIPProposalMessage(proposal));
-			}
-		}
+			const recipients = await this.getAlertRecipients('priceAlerts', p);
+			if (!recipients.length) continue;
 
-		// BRIDGE ALERTS — denied proposals
-		const deniedCcipProposals = this.bridge
-			.getDeniedProposals()
-			.filter((p) => p.deniedAt * 1000 > this.telegramState.ccipProposalDenied);
-		if (deniedCcipProposals.length > 0) {
-			this.telegramState.ccipProposalDenied = Date.now();
-			for (const proposal of deniedCcipProposals) {
-				this.sendMessageAll(CCIPProposalDeniedMessage(proposal));
-			}
-		}
-
-		// BRIDGE ALERTS — enacted proposals
-		const enactedCcipProposals = this.bridge
-			.getEnactedProposals()
-			.filter((p) => p.enactedAt * 1000 > this.telegramState.ccipProposalEnacted);
-		if (enactedCcipProposals.length > 0) {
-			this.telegramState.ccipProposalEnacted = Date.now();
-			for (const proposal of enactedCcipProposals) {
-				this.sendMessageAll(CCIPProposalEnactedMessage(proposal));
-			}
-		}
-
-		// BRIDGE ALERTS — rate limit changes
-		const rateLimitUpdates = this.bridge
-			.getChains()
-			.list.filter((c) => c.rateLimitUpdatedAt !== null && c.rateLimitUpdatedAt * 1000 > this.telegramState.ccipRateLimit);
-		if (rateLimitUpdates.length > 0) {
-			this.telegramState.ccipRateLimit = Date.now();
-			for (const chain of rateLimitUpdates) {
-				this.sendMessageAll(CCIPRateLimitMessage(chain));
-			}
-		}
-
-		// PERSONAL USER ALERTS — DM users based on their watched addresses
-		const userAlerts = await this.prisma.safeExecute(() => this.prisma.telegramUserAlert.findMany());
-		if (!userAlerts?.length) return;
-
-		const alertsByUser = new Map<string, typeof userAlerts>();
-		for (const alert of userAlerts) {
-			if (!alertsByUser.has(alert.telegramId)) alertsByUser.set(alert.telegramId, []);
-			alertsByUser.get(alert.telegramId).push(alert);
-		}
-
-		const allPositions = Object.values(this.position.getPositionsOpen().map);
-		const pricesMap = this.prices.getPricesMapping();
-
-		const THRES_LOWEST = 1;
-		const THRES_ALERT = 1.05;
-		const THRES_WARN = 1.1;
-		const DELAY_LOWEST = 2 * 60 * 60 * 1000;
-		const DELAY_ALERT = 12 * 60 * 60 * 1000;
-		const DELAY_WARNING = 24 * 60 * 60 * 1000;
-
-		for (const [telegramId, alerts] of alertsByUser) {
-			const watchedPositions = alerts.filter((a) => a.type === 'position').map((a) => a.address);
-			const watchedOwners = alerts.filter((a) => a.type === 'owner').map((a) => a.address);
-			const watchedCollateral = alerts.filter((a) => a.type === 'collateral').map((a) => a.address);
-
-			for (const p of allPositions) {
-				const posAddr = normalizeAddress(p.position);
-				const isWatched =
-					watchedPositions.includes(posAddr) ||
-					watchedOwners.includes(normalizeAddress(p.owner)) ||
-					watchedCollateral.includes(normalizeAddress(p.collateral));
-				if (!isWatched) continue;
-
-				const priceQuery = pricesMap[normalizeAddress(p.collateral)];
-				if (!priceQuery || priceQuery.timestamp === 0) continue;
-
-				const posPrice = parseFloat(formatUnits(BigInt(p.price), 36 - p.collateralDecimals));
-				const price = priceQuery.price.chf;
-				if (posPrice * THRES_WARN < price) continue;
-
+			const posAddr = normalizeAddress(p.position);
+			for (const telegramId of recipients) {
 				const cooldownKey = `${telegramId}:${posAddr}`;
-				let last = this.userAlertCooldown.get(cooldownKey) ?? {
+				const last = this.telegramState.positionsPriceAlert.get(cooldownKey) ?? {
 					alertTimestamp: 0,
 					warningTimestamp: 0,
 					lowestTimestamp: 0,
 					lowestPrice: 0,
 				};
 
-				const fakeLastState = {
-					warningPrice: 0,
-					warningTimestamp: last.warningTimestamp,
-					alertPrice: 0,
-					alertTimestamp: last.alertTimestamp,
-					lowestPrice: last.lowestPrice,
-					lowestTimestamp: last.lowestTimestamp,
-				};
-
 				if (price < posPrice * THRES_LOWEST) {
 					if (last.lowestTimestamp + DELAY_LOWEST < Date.now()) {
 						if (last.lowestPrice === 0 || last.lowestPrice * 0.98 > price) {
-							!isSoftStart && (await this.sendMessage(telegramId, PositionPriceLowest(p, priceQuery, fakeLastState)));
+							!isSoftStart && (await this.sendMessage(telegramId, PositionPriceLowest(p, priceQuery, last)));
 							last.lowestPrice = price;
 						}
 						last.lowestTimestamp = Date.now();
 					}
 				} else if (price < posPrice * THRES_ALERT) {
 					if (last.alertTimestamp + DELAY_ALERT < Date.now()) {
-						!isSoftStart && (await this.sendMessage(telegramId, PositionPriceAlert(p, priceQuery, fakeLastState)));
+						!isSoftStart && (await this.sendMessage(telegramId, PositionPriceAlert(p, priceQuery, last)));
 						last.alertTimestamp = Date.now();
 					}
 				} else if (price < posPrice * THRES_WARN) {
 					if (last.warningTimestamp + DELAY_WARNING < Date.now()) {
-						!isSoftStart && (await this.sendMessage(telegramId, PositionPriceWarning(p, priceQuery, fakeLastState)));
+						!isSoftStart && (await this.sendMessage(telegramId, PositionPriceWarning(p, priceQuery, last)));
 						last.warningTimestamp = Date.now();
 					}
 				}
@@ -582,79 +445,64 @@ export class TelegramService {
 					last.lowestPrice = 0;
 				}
 
-				this.userAlertCooldown.set(cooldownKey, last);
+				this.telegramState.positionsPriceAlert.set(cooldownKey, last);
 			}
 		}
 	}
 
-	upsertTelegramGroup(id: number | string): boolean {
-		if (!id) return;
-		if (this.telegramGroupState.groups.includes(id.toString())) return false;
-		this.telegramGroupState.groups.push(id.toString());
+	async upsertTelegramGroup(id: number | string): Promise<boolean> {
+		if (!id) return false;
+		const existing = await this.prisma.safeExecute(() => this.prisma.telegramGroup.findUnique({ where: { chatId: id.toString() } }));
+		if (existing) return false;
+		await this.prisma.safeExecute(() => this.prisma.telegramGroup.create({ data: { chatId: id.toString() } }));
 		this.logger.log(`Upserted Telegram Group: ${id}`);
-		this.sendMessage(id, WelcomeGroupMessage(id, this.telegramHandles));
+		this.sendMessage(id, WelcomeGroupMessage(id, []));
 		return true;
 	}
 
 	async removeTelegramGroup(id: number | string): Promise<boolean> {
-		if (!id) return;
-		const inGroup: boolean = this.telegramGroupState.groups.includes(id.toString());
-		const inSubscription = !!this.telegramGroupState.subscription[id.toString()];
-		const update: boolean = inGroup || inSubscription;
-
-		if (inGroup) {
-			this.telegramGroupState.groups = this.telegramGroupState.groups.filter((g) => g !== id.toString());
-		}
-
-		if (inSubscription) {
-			delete this.telegramGroupState.subscription[id.toString()];
-		}
-
-		if (update) {
-			this.logger.log(`Removed Telegram Group: ${id}`);
-			await this.removeBackupGroups([String(id)]);
-		}
-
-		return update;
+		if (!id) return false;
+		const result = await this.prisma.safeExecute(() => this.prisma.telegramGroup.deleteMany({ where: { chatId: id.toString() } }));
+		const removed = (result?.count ?? 0) > 0;
+		if (removed) this.logger.log(`Removed Telegram Group: ${id}`);
+		return removed;
 	}
 
-	getSubscribedGroups(handle: string): string[] {
-		const key = handle.replace('/', '');
-		return (
-			Object.entries(this.telegramGroupState.subscription)
-				// eslint-disable-next-line @typescript-eslint/no-unused-vars
-				.filter(([_, subs]) => subs[key])
-				.map(([chatId]) => chatId)
+	async getSubscribedChatIds(type: string): Promise<string[]> {
+		const alerts = await this.prisma.safeExecute(() => this.prisma.telegramUserAlert.findMany({ where: { type, address: '' } }));
+		return alerts?.map((a) => a.telegramId) ?? [];
+	}
+
+	// Returns unique telegramIds who have opted into alertType AND watch the given position
+	// via any of: allPositions, specific position address, owner address, or collateral address.
+	async getAlertRecipients(alertType: string, position: { position: string; owner: string; collateral: string }): Promise<string[]> {
+		const [typeAlerts, allPosAlerts, posAlerts, ownerAlerts, collateralAlerts] = await Promise.all([
+			this.prisma.safeExecute(() => this.prisma.telegramUserAlert.findMany({ where: { type: alertType, address: '' } })),
+			this.prisma.safeExecute(() => this.prisma.telegramUserAlert.findMany({ where: { type: 'allPositions', address: '' } })),
+			this.prisma.safeExecute(() =>
+				this.prisma.telegramUserAlert.findMany({ where: { type: 'position', address: normalizeAddress(position.position) } })
+			),
+			this.prisma.safeExecute(() =>
+				this.prisma.telegramUserAlert.findMany({ where: { type: 'owner', address: normalizeAddress(position.owner) } })
+			),
+			this.prisma.safeExecute(() =>
+				this.prisma.telegramUserAlert.findMany({ where: { type: 'collateral', address: normalizeAddress(position.collateral) } })
+			),
+		]);
+
+		const hasAlertType = new Set((typeAlerts ?? []).map((a) => a.telegramId));
+		const watchesPosition = new Set(
+			[...(allPosAlerts ?? []), ...(posAlerts ?? []), ...(ownerAlerts ?? []), ...(collateralAlerts ?? [])].map((a) => a.telegramId)
 		);
-	}
 
-	private buildSubscriptionKeyboard(chatId: string): TelegramBot.InlineKeyboardButton[][] {
-		const subs = this.telegramGroupState.subscription[chatId] || {};
-		return [
-			[{ text: `${subs['MintingUpdates'] ? '✅' : '⬜'} Minting Updates`, callback_data: 'sub:MintingUpdates' }],
-			[{ text: `${subs['PriceAlerts'] ? '✅' : '⬜'} Price Alerts`, callback_data: 'sub:PriceAlerts' }],
-			[{ text: `${subs['WeeklyInfos'] ? '✅' : '⬜'} Weekly Infos`, callback_data: 'sub:WeeklyInfos' }],
-		];
-	}
-
-	private async sendSubscriptionMenu(chatId: number | string) {
-		const id = chatId.toString();
-		try {
-			await this.bot.sendMessage(id, '📡 *Manage Subscriptions*\n\nTap to toggle an alert type on or off:', {
-				parse_mode: 'Markdown',
-				reply_markup: { inline_keyboard: this.buildSubscriptionKeyboard(id) },
-			});
-		} catch (error) {
-			this.logger.warn(`Failed to send subscription menu to ${id}: ${error?.message}`);
-		}
+		return [...hasAlertType].filter((id) => watchesPosition.has(id));
 	}
 
 	async applyListener() {
 		try {
 			await this.bot.setMyCommands([
 				{ command: 'start', description: 'Connect this chat & show info' },
-				{ command: 'help', description: 'Show status & subscriptions' },
-				{ command: 'subscribe', description: 'Manage alert subscriptions' },
+				{ command: 'help', description: 'Show status & info' },
 				{ command: 'sessions', description: 'View & manage linked app sessions' },
 			]);
 			this.logger.log('Bot command menu registered');
@@ -662,32 +510,22 @@ export class TelegramService {
 			this.logger.warn(`Failed to set bot commands: ${e.message}`);
 		}
 
-		const toggle = (handle: string, msg: TelegramBot.Message) => {
-			if (handle !== msg.text) return;
-			const group = msg.chat.id.toString();
-			const key = handle.replace('/', '');
-			const chatSubs = this.telegramGroupState.subscription[group] || {};
-			if (chatSubs[key]) {
-				delete chatSubs[key];
-				this.sendMessage(group, `⬜ Unsubscribed from *${handle}*`);
-			} else {
-				chatSubs[key] = true;
-				this.sendMessage(group, `✅ Subscribed to *${handle}*`);
-			}
-			this.telegramGroupState.subscription[group] = chatSubs;
-			this.writeBackupGroups([group]);
-		};
-
 		this.bot.on('message', async (m) => {
-			if (this.upsertTelegramGroup(m.chat.id) == true) await this.writeBackupGroups([String(m.chat.id)]);
+			await this.upsertTelegramGroup(m.chat.id);
 
-			if (m.text?.startsWith('/start') || m.text === '/help') {
-				const param = m.text?.startsWith('/start ') ? m.text.slice(7).trim() : null;
-				if (param?.startsWith('login_')) {
-					const jti = param.slice(6);
-					const telegramId = m.from?.id?.toString();
-					if (jti && telegramId) {
-						const linked = await this.authService.linkSession(jti, telegramId);
+			// In group chats Telegram appends @botname to commands: "/start@botname PARAM"
+			// Strip it so the rest of the handler works identically for DMs and groups.
+			const text = m.text?.replace(/^(\/\w+)@\w+/, '$1');
+
+			if (text?.startsWith('/start') || text === '/help') {
+				const param = text?.startsWith('/start ') ? text.slice(7).trim() : null;
+				if (param?.startsWith('link_')) {
+					const jti = param.slice(5);
+					const isGroup = m.chat.type === 'group' || m.chat.type === 'supergroup';
+					const id = isGroup ? m.chat.id.toString() : m.from?.id?.toString();
+					const context = isGroup ? 'group' : 'dm';
+					if (jti && id) {
+						const linked = await this.authService.linkSession(jti, id, context);
 						await this.sendMessage(
 							m.chat.id,
 							linked ? '✅ Successfully linked! Return to the app.' : '⚠️ Link expired or already used.'
@@ -695,16 +533,12 @@ export class TelegramService {
 						return;
 					}
 				}
-				await this.sendMessage(
-					m.chat.id,
-					HelpMessage(this.telegramHandles, this.telegramGroupState.subscription[m.chat.id.toString()] || {})
-				);
-			} else if (m.text === '/subscribe') {
-				await this.sendSubscriptionMenu(m.chat.id);
-			} else if (m.text === '/sessions') {
-				const telegramId = m.from?.id?.toString();
-				if (!telegramId) return;
-				const count = await this.authService.getSessionCount(telegramId);
+				await this.sendMessage(m.chat.id, HelpMessage([], {}));
+			} else if (text === '/sessions') {
+				const isGroup = m.chat.type === 'group' || m.chat.type === 'supergroup';
+				const id = isGroup ? m.chat.id.toString() : m.from?.id?.toString();
+				if (!id) return;
+				const count = await this.authService.getSessionCount(id);
 				try {
 					await this.bot.sendMessage(m.chat.id, `📱 You have *${count}* linked session${count !== 1 ? 's' : ''}.`, {
 						parse_mode: 'Markdown',
@@ -716,16 +550,15 @@ export class TelegramService {
 				} catch (e) {
 					this.logger.warn(`/sessions failed: ${e?.message}`);
 				}
-			} else {
-				this.telegramHandles.forEach((h) => toggle(h, m));
 			}
 		});
 
 		this.bot.on('callback_query', async (query) => {
 			if (query.data === 'sessions:remove_all') {
-				const telegramId = query.from?.id?.toString();
-				if (telegramId) {
-					await this.authService.removeAllSessions(telegramId);
+				const isGroup = query.message?.chat?.type === 'group' || query.message?.chat?.type === 'supergroup';
+				const id = isGroup ? query.message?.chat?.id?.toString() : query.from?.id?.toString();
+				if (id) {
+					await this.authService.removeAllSessions(id);
 					await this.bot.answerCallbackQuery(query.id, { text: '✅ All sessions removed.' });
 					try {
 						await this.bot.editMessageText('🗑 All linked sessions removed.', {
@@ -734,41 +567,15 @@ export class TelegramService {
 						});
 					} catch (_) {}
 				}
-				return;
 			}
-
-			if (!query.data?.startsWith('sub:')) return;
-			const handle = query.data.replace('sub:', '');
-			const chatId = query.message.chat.id.toString();
-
-			const chatSubs = this.telegramGroupState.subscription[chatId] || {};
-			if (chatSubs[handle]) {
-				delete chatSubs[handle];
-			} else {
-				chatSubs[handle] = true;
-			}
-			this.telegramGroupState.subscription[chatId] = chatSubs;
-			await this.writeBackupGroups([chatId]);
-
-			try {
-				await this.bot.editMessageReplyMarkup(
-					{ inline_keyboard: this.buildSubscriptionKeyboard(chatId) },
-					{ chat_id: query.message.chat.id, message_id: query.message.message_id }
-				);
-			} catch (_) {}
-
-			const isOn = !!chatSubs[handle];
-			await this.bot.answerCallbackQuery(query.id, {
-				text: isOn ? `✅ Subscribed to ${handle}` : `⬜ Unsubscribed from ${handle}`,
-			});
 		});
 	}
 
 	@Cron(CronExpression.EVERY_WEEK)
-	scheduleWeeklyInfos() {
+	async scheduleWeeklyInfos() {
 		const days = 3600 * 24 * 30; // seconds
 		const infos = this.analytics.getDailyLog().logs.filter((i) => Number(i.timestamp) >= Date.now() / 1000 - days);
-		const groups = this.getSubscribedGroups('/WeeklyInfos');
+		const groups = await this.getSubscribedChatIds('weeklyInfo');
 
 		const before = infos.at(0);
 		const now = infos.at(-1);
