@@ -1,13 +1,17 @@
-import { Body, Controller, Delete, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Inject, Param, Post, Req, UseGuards, forwardRef } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard, LinkedGuard } from './auth.guard';
 import { AlertDto, AlertResponse, CreateTokenResponse, TokenStatusResponse } from './auth.types';
+import { TelegramService } from 'integrations/telegram/telegram.service';
 
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
-	constructor(private readonly authService: AuthService) {}
+	constructor(
+		private readonly authService: AuthService,
+		@Inject(forwardRef(() => TelegramService)) private readonly telegramService: TelegramService
+	) {}
 
 	@Post('token')
 	@ApiOperation({ summary: 'Create an unlinked session token' })
@@ -22,6 +26,16 @@ export class AuthController {
 	async getStatus(@Req() req): Promise<TokenStatusResponse> {
 		const linked = await this.authService.getStatus(req.jti);
 		return { linked };
+	}
+
+	@Post('test')
+	@UseGuards(LinkedGuard)
+	@ApiOperation({ summary: 'Send a test message to the linked Telegram account' })
+	async testBot(@Req() req): Promise<void> {
+		await this.telegramService.sendMessage(
+			req.telegramId,
+			'🔔 *Frankencoin Test*\n\nYour Telegram notifications are connected and working. ✅'
+		);
 	}
 
 	@Get('alerts')

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AnalyticsModule } from 'modules/analytics/analytics.module';
 import { BridgeModule } from 'modules/bridge/bridge.module';
 import { DatabaseModule } from 'core/database/database.module';
@@ -20,7 +20,7 @@ import { TelegramService } from './telegram.service';
 		SavingsModule,
 		AnalyticsModule,
 		BridgeModule,
-		AuthModule,
+		forwardRef(() => AuthModule),
 	],
 	providers: [TelegramService],
 	exports: [TelegramService],

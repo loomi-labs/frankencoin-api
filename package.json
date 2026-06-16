@@ -1,6 +1,6 @@
 {
 	"name": "@frankencoin/api",
-	"version": "0.3.16",
+	"version": "0.3.17",
 	"private": false,
 	"license": "MIT",
 	"main": "./exports/dist/index.js",
@@ -37,6 +37,7 @@
 		"telegram:mocks": "ts-node -r tsconfig-paths/register scripts/send-telegram-mocks.ts",
 		"telegram:groups": "ts-node -r tsconfig-paths/register scripts/list-telegram-groups.ts",
 		"telegram:migrate-weekly": "ts-node -r tsconfig-paths/register scripts/migrate-daily-to-weekly-subs.ts",
+		"telegram:migrate-subscriptions": "ts-node -r tsconfig-paths/register scripts/migrate-subscriptions-to-alerts.ts",
 		"infra:up": "docker stack deploy -c stack.testing.yml frankencoin-api",
 		"infra:down": "docker stack remove frankencoin-api"
 	},

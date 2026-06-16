@@ -2,7 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'crypto';
 import { PrismaService } from 'core/database/prisma.service';
-import { AlertDto, AlertResponse, JwtPayload } from './auth.types';
+import { AlertDto, AlertResponse, JwtPayload, SessionContext } from './auth.types';
+import { Cron, CronExpression } from '@nestjs/schedule';
 
 @Injectable()
 export class AuthService {
@@ -33,15 +34,15 @@ export class AuthService {
 		return session?.status === 'linked';
 	}
 
-	async linkSession(jti: string, telegramId: string): Promise<boolean> {
+	async linkSession(jti: string, id: string, context: SessionContext): Promise<boolean> {
 		const result = await this.prisma.safeExecute(() =>
 			this.prisma.telegramSession.updateMany({
 				where: { jti, status: 'unlinked' },
-				data: { telegramId, status: 'linked', linkedAt: new Date() },
+				data: { telegramId: id, context, status: 'linked', linkedAt: new Date() },
 			})
 		);
 		const linked = (result?.count ?? 0) > 0;
-		if (linked) this.logger.log(`Session linked: jti=${jti} telegramId=${telegramId}`);
+		if (linked) this.logger.log(`Session linked: jti=${jti} context=${context} id=${id}`);
 		return linked;
 	}
 
@@ -57,7 +58,7 @@ export class AuthService {
 	}
 
 	async addAlert(telegramId: string, dto: AlertDto): Promise<AlertResponse> {
-		const address = dto.address.toLowerCase();
+		const address = (dto.address ?? '').toLowerCase();
 		const alert = await this.prisma.safeExecute(() =>
 			this.prisma.telegramUserAlert.upsert({
 				where: { telegramId_type_address: { telegramId, type: dto.type, address } },
@@ -92,5 +93,16 @@ export class AuthService {
 		} catch {
 			return null;
 		}
+	}
+
+	@Cron(CronExpression.EVERY_3_HOURS)
+	async cleanupUnlinkedSessions() {
+		const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+		const result = await this.prisma.safeExecute(() =>
+			this.prisma.telegramSession.deleteMany({
+				where: { status: 'unlinked', createdAt: { lt: cutoff } },
+			})
+		);
+		if (result?.count > 0) this.logger.log(`Cleaned up ${result.count} unlinked Telegram session(s)`);
 	}
 }
