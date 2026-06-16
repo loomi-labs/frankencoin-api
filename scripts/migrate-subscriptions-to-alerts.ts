@@ -2,14 +2,17 @@
 /**
  * Migrates TelegramGroup.subscriptions JSON to TelegramUserAlert rows.
  *
- * Old format (per group/chatId):
- *   { MintingUpdates: true, PriceAlerts: true, WeeklyInfos: true }
+ * Old subscriptions (stored without leading slash):
+ *   MintingUpdates, PriceAlerts, WeeklyInfos
  *
- * New format (TelegramUserAlert):
- *   { telegramId: chatId, type: "mintingUpdates" | "priceAlerts" | "weeklyInfo", address: "" }
+ * Migration logic:
+ *   Everyone gets BASIC (9 types incl. weeklyInfo).
+ *   MintingUpdates in old subs → also add mintingUpdates.
+ *   PriceAlerts in old subs    → also add priceAlerts.
  *
  * Usage:
- *   yarn telegram:migrate-subscriptions
+ *   yarn telegram:migrate-subscriptions          ← dry run (default)
+ *   yarn telegram:migrate-subscriptions true     ← execute
  */
 
 import * as dotenv from 'dotenv';
@@ -18,67 +21,65 @@ dotenv.config();
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
+const execute = process.argv[2] === 'true';
 
-const SUBSCRIPTION_MAP: Record<string, string> = {
-	MintingUpdates: 'mintingUpdates',
-	PriceAlerts: 'priceAlerts',
-	WeeklyInfos: 'weeklyInfo',
-};
+const BASIC_ALERT_TYPES = [
+	'positionExpiry',
+	'challenge',
+	'allPositions',
+	'positionProposal',
+	'minterProposal',
+	'ccipProposal',
+	'leadrateProposal',
+	'weeklyInfo',
+	'equityEvents',
+];
+
+type RawGroup = { chatId: string; subscriptions: string | null };
 
 async function main() {
-	const groups = await prisma.telegramGroup.findMany();
+	console.log(execute ? '🚀 Execute mode\n' : '🔍 Dry run — pass "true" to execute\n');
+
+	// Read via raw SQL — subscriptions column was removed from the Prisma schema
+	const groups = await prisma.$queryRaw<RawGroup[]>`SELECT "chatId", "subscriptions" FROM telegram_groups`;
 
 	if (groups.length === 0) {
 		console.log('No telegram groups found — nothing to migrate.');
 		return;
 	}
 
-	console.log(`Found ${groups.length} group(s). Starting migration...\n`);
+	console.log(`Found ${groups.length} group(s).\n`);
 
 	let totalCreated = 0;
-	let totalSkipped = 0;
 
 	for (const group of groups) {
-		const subs = (group.subscriptions as Record<string, boolean>) ?? {};
-		const activeKeys = Object.entries(subs)
-			.filter(([, enabled]) => enabled)
-			.map(([key]) => key);
+		const raw = group.subscriptions;
+		const subs: Record<string, boolean> = !raw ? {} : typeof raw === 'string' ? JSON.parse(raw) : (raw as any);
 
-		if (activeKeys.length === 0) {
-			console.log(`  ${group.chatId}: no active subscriptions, skipping`);
-			continue;
-		}
+		const hadMinting = subs['MintingUpdates'] === true;
+		const hadPriceAlerts = subs['PriceAlerts'] === true;
 
-		for (const key of activeKeys) {
-			const alertType = SUBSCRIPTION_MAP[key];
-			if (!alertType) {
-				console.log(`  ${group.chatId}: unknown subscription key "${key}", skipping`);
-				totalSkipped++;
-				continue;
+		const types = [...BASIC_ALERT_TYPES, ...(hadMinting ? ['mintingUpdates'] : []), ...(hadPriceAlerts ? ['priceAlerts'] : [])];
+
+		const extras = [hadMinting && 'mintingUpdates', hadPriceAlerts && 'priceAlerts'].filter(Boolean);
+		const label = extras.length ? `basic + ${extras.join(' + ')} (${types.length})` : `basic (${types.length})`;
+		console.log(`  ${group.chatId}: ${label}`);
+
+		if (execute) {
+			for (const type of types) {
+				await prisma.telegramUserAlert.upsert({
+					where: { telegramId_type_address: { telegramId: group.chatId, type, address: '' } },
+					create: { telegramId: group.chatId, type, address: '' },
+					update: {},
+				});
+				totalCreated++;
 			}
-
-			const result = await prisma.telegramUserAlert.upsert({
-				where: {
-					telegramId_type_address: {
-						telegramId: group.chatId,
-						type: alertType,
-						address: '',
-					},
-				},
-				create: {
-					telegramId: group.chatId,
-					type: alertType,
-					address: '',
-				},
-				update: {},
-			});
-
-			console.log(`  ${group.chatId}: ${key} → ${alertType} (id: ${result.id})`);
-			totalCreated++;
+		} else {
+			totalCreated += types.length;
 		}
 	}
 
-	console.log(`\nDone. ${totalCreated} alert(s) created, ${totalSkipped} skipped.`);
+	console.log(execute ? `\nDone. ${totalCreated} alert(s) created.` : `\nDry run complete. Would create ${totalCreated} alert(s).`);
 }
 
 main()

@@ -35,8 +35,7 @@
 		"migrate:storj": "ts-node prisma/scripts/migrate-storj-to-db.ts",
 		"verify:migration": "ts-node prisma/scripts/verify-migration.ts",
 		"telegram:mocks": "ts-node -r tsconfig-paths/register scripts/send-telegram-mocks.ts",
-		"telegram:groups": "ts-node -r tsconfig-paths/register scripts/list-telegram-groups.ts",
-		"telegram:migrate-weekly": "ts-node -r tsconfig-paths/register scripts/migrate-daily-to-weekly-subs.ts",
+		"telegram:users": "ts-node -r tsconfig-paths/register scripts/list-telegram-user.ts",
 		"telegram:migrate-subscriptions": "ts-node -r tsconfig-paths/register scripts/migrate-subscriptions-to-alerts.ts",
 		"infra:up": "docker stack deploy -c stack.testing.yml frankencoin-api",
 		"infra:down": "docker stack remove frankencoin-api"
