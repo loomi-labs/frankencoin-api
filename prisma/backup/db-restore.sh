@@ -34,6 +34,8 @@ docker run --rm \
   pg_restore \
     --no-owner \
     --no-privileges \
+    --clean \
+    --if-exists \
     -d "$TARGET_DB" \
     "/backup/${DUMP_FILE}"
 
