@@ -34,9 +34,9 @@
 		"prisma:reset": "npx prisma migrate reset --schema=./prisma/schema",
 		"migrate:storj": "ts-node prisma/scripts/migrate-storj-to-db.ts",
 		"verify:migration": "ts-node prisma/scripts/verify-migration.ts",
+		"migrate:subscriptions": "ts-node -r tsconfig-paths/register prisma/scripts/migrate-subscriptions-to-alerts.ts",
 		"telegram:mocks": "ts-node -r tsconfig-paths/register scripts/send-telegram-mocks.ts",
 		"telegram:users": "ts-node -r tsconfig-paths/register scripts/list-telegram-user.ts",
-		"telegram:migrate-subscriptions": "ts-node -r tsconfig-paths/register scripts/migrate-subscriptions-to-alerts.ts",
 		"infra:up": "docker stack deploy -c stack.testing.yml frankencoin-api",
 		"infra:down": "docker stack remove frankencoin-api"
 	},

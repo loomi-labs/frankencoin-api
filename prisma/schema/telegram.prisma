@@ -1,6 +1,7 @@
 // Telegram group subscriptions and state
 model TelegramGroup {
   chatId        String   @id
+  subscriptions Json?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
