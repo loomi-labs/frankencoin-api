@@ -456,7 +456,7 @@ export class TelegramService {
 		if (existing) return false;
 		await this.prisma.safeExecute(() => this.prisma.telegramGroup.create({ data: { chatId: id.toString() } }));
 		this.logger.log(`Upserted Telegram Group: ${id}`);
-		this.sendMessage(id, WelcomeGroupMessage(id, []));
+		this.sendMessage(id, WelcomeGroupMessage(id));
 		return true;
 	}
 
@@ -502,8 +502,8 @@ export class TelegramService {
 		try {
 			await this.bot.setMyCommands([
 				{ command: 'start', description: 'Connect this chat & show info' },
-				{ command: 'help', description: 'Show status & info' },
 				{ command: 'sessions', description: 'View & manage linked app sessions' },
+				{ command: 'help', description: 'Show status & info' },
 			]);
 			this.logger.log('Bot command menu registered');
 		} catch (e) {
@@ -511,7 +511,7 @@ export class TelegramService {
 		}
 
 		this.bot.on('message', async (m) => {
-			await this.upsertTelegramGroup(m.chat.id);
+			const isNew = await this.upsertTelegramGroup(m.chat.id);
 
 			// In group chats Telegram appends @botname to commands: "/start@botname PARAM"
 			// Strip it so the rest of the handler works identically for DMs and groups.
@@ -533,7 +533,8 @@ export class TelegramService {
 						return;
 					}
 				}
-				await this.sendMessage(m.chat.id, HelpMessage([], {}));
+				// WelcomeGroup already sent for new chats — skip Help to avoid double message
+				if (!isNew) await this.sendMessage(m.chat.id, HelpMessage(m.chat.id));
 			} else if (text === '/sessions') {
 				const isGroup = m.chat.type === 'group' || m.chat.type === 'supergroup';
 				const id = isGroup ? m.chat.id.toString() : m.from?.id?.toString();

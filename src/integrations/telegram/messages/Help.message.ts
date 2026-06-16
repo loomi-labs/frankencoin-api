@@ -1,31 +1,12 @@
 import { AppUrl } from 'utils/func-helper';
-import { mainnet } from 'viem/chains';
 
-const HANDLE_LABELS: Record<string, string> = {
-	'/MintingUpdates': '📊 Minting Updates',
-	'/PriceAlerts': '⚠️ Price Alerts',
-	'/WeeklyInfos': '📅 Weekly Infos',
-};
-
-export function HelpMessage(handles: string[], chatSubs: { [handle: string]: boolean }): string {
-	const subscriptionLines = handles
-		.filter((h) => h !== '/help')
-		.map((h) => {
-			const key = h.replace('/', '');
-			const label = HANDLE_LABELS[h] ?? h;
-			const status = chatSubs[key] ? '✅' : '⬜';
-			return `${status} ${label}`;
-		})
-		.join('\n');
-
+export function HelpMessage(group: string | number): string {
 	return `ℹ️ *Frankencoin Bot*
 
-Monitoring the Frankencoin ecosystem on ${mainnet.name} (chain ${mainnet.id}).
+Monitoring the Frankencoin ecosystem. (\`${group}\`)
 
-📡 *Subscriptions*
-${subscriptionLines}
+Configure notifications and alert preferences in the [🔗 Link](${AppUrl('/monitoring/telegram')}).
+Use /sessions to view and manage linked app sessions.
 
-Use /subscribe to toggle alert types.
-
-v${process.env.npm_package_version} · [🌐 App](${AppUrl('')})`;
+v${process.env.npm_package_version} · [🌐 App](${AppUrl('')}) · [📦 GitHub](https://github.com/Frankencoin-ZCHF/frankencoin-api)`;
 }

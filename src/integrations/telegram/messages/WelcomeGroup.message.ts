@@ -1,27 +1,11 @@
 import { AppUrl } from 'utils/func-helper';
-import { mainnet } from 'viem/chains';
 
-export function WelcomeGroupMessage(group: string | number, handles: string[]): string {
-	const subscriptions = handles
-		.filter((h) => h !== '/help')
-		.map((h) => {
-			const labels: Record<string, string> = {
-				'/MintingUpdates': '📊 /MintingUpdates — new minting transactions',
-				'/PriceAlerts': '⚠️ /PriceAlerts — collateral price warnings',
-				'/WeeklyInfos': '📅 /WeeklyInfos — weekly ecosystem summary',
-			};
-			return labels[h] ?? h;
-		})
-		.join('\n');
-
+export function WelcomeGroupMessage(group: string | number): string {
 	return `👋 *Welcome to Frankencoin Bot*
 
-This chat (\`${group}\`) is now connected to the Frankencoin ecosystem monitor on ${mainnet.name}.
+This chat (\`${group}\`) is now connected to the Frankencoin ecosystem.
 
-📡 *Optional Subscriptions*
-${subscriptions}
-
-Use /subscribe to manage alerts or /help for status.
+Link this chat in the [🔗 Link](${AppUrl('/monitoring/telegram')}) to enable personalized alerts.
 
 v${process.env.npm_package_version} · [🌐 App](${AppUrl('')}) · [📦 GitHub](https://github.com/Frankencoin-ZCHF/frankencoin-api)`;
 }
