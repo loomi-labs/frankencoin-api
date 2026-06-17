@@ -14,7 +14,6 @@ dotenv.config();
 import TelegramBot from 'node-telegram-bot-api';
 import { WelcomeGroupMessage } from '../src/integrations/telegram/messages/WelcomeGroup.message';
 import { HelpMessage } from '../src/integrations/telegram/messages/Help.message';
-import { StartUpMessage } from '../src/integrations/telegram/messages/StartUp.message';
 import { MinterProposalMessage } from '../src/integrations/telegram/messages/MinterProposal.message';
 import { MinterProposalVetoedMessage } from '../src/integrations/telegram/messages/MinterProposalVetoed.message';
 import { LeadrateProposalMessage } from '../src/integrations/telegram/messages/LeadrateProposal.message';
@@ -30,6 +29,10 @@ import { MintingUpdateMessage } from '../src/integrations/telegram/messages/Mint
 import { EquityInvestedMessage } from '../src/integrations/telegram/messages/EquityInvested.message';
 import { EquityRedeemedMessage } from '../src/integrations/telegram/messages/EquityRedeemed.message';
 import { WeeklyInfosMessage } from '../src/integrations/telegram/messages/WeeklyInfos.message';
+import { CCIPProposalMessage } from '../src/integrations/telegram/messages/CCIPProposal.message';
+import { CCIPProposalDeniedMessage } from '../src/integrations/telegram/messages/CCIPProposalDenied.message';
+import { CCIPProposalEnactedMessage } from '../src/integrations/telegram/messages/CCIPProposalEnacted.message';
+import { CCIPRateLimitMessage } from '../src/integrations/telegram/messages/CCIPRateLimit.message';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -69,7 +72,7 @@ const mockPosition: any = {
 	owner: ADDR_OWNER,
 	zchf: '0x0000000000000000000000000000000000000000' as any,
 	collateral: ADDR_COL,
-	price: (45000n * 10n ** 36n / 10n ** 8n).toString(), // 45000 ZCHF per 1e-8 BTC unit → 36-8=28 decimals
+	price: ((45000n * 10n ** 36n) / 10n ** 8n).toString(), // 45000 ZCHF per 1e-8 BTC unit → 36-8=28 decimals
 	created: now - 86400 * 30,
 	isOriginal: true,
 	isClone: false,
@@ -78,21 +81,21 @@ const mockPosition: any = {
 	closed: false,
 	original: ADDR_POS,
 	parent: ADDR_POS,
-	minimumCollateral: (1n * 10n ** 7n).toString(),         // 0.1 WBTC (8 decimals)
-	annualInterestPPM: 50000,                                // 5%
+	minimumCollateral: (1n * 10n ** 7n).toString(), // 0.1 WBTC (8 decimals)
+	annualInterestPPM: 50000, // 5%
 	riskPremiumPPM: 20000,
-	reserveContribution: 100000,                             // 10%
+	reserveContribution: 100000, // 10%
 	start: now - 86400 * 10,
 	cooldown: now - 86400 * 5,
-	expiration: now + 86400,                                 // expires in 1 day
-	challengePeriod: 86400,                                  // 24h
+	expiration: now + 86400, // expires in 1 day
+	challengePeriod: 86400, // 24h
 	zchfName: 'Frankencoin',
 	zchfSymbol: 'ZCHF',
 	zchfDecimals: 18,
 	collateralName: 'Wrapped BTC',
 	collateralSymbol: 'WBTC',
 	collateralDecimals: 8,
-	collateralBalance: (15n * 10n ** 7n).toString(),        // 1.5 WBTC
+	collateralBalance: (15n * 10n ** 7n).toString(), // 1.5 WBTC
 	limitForPosition: (100000n * 10n ** 18n).toString(),
 	limitForClones: (100000n * 10n ** 18n).toString(),
 	availableForPosition: (50000n * 10n ** 18n).toString(),
@@ -148,8 +151,8 @@ const mockChallenge: any = {
 	start: BigInt(now - 3600),
 	created: BigInt(now - 3600),
 	duration: BigInt(86400),
-	size: (10n * 10n ** 7n),  // 1.0 WBTC
-	liqPrice: (45000n * 10n ** 28n), // 45000 ZCHF per WBTC (36-8=28 decimals)
+	size: 10n * 10n ** 7n, // 1.0 WBTC
+	liqPrice: 45000n * 10n ** 28n, // 45000 ZCHF per WBTC (36-8=28 decimals)
 	bids: 0n,
 	filledSize: 0n,
 	acquiredCollateral: 0n,
@@ -168,7 +171,7 @@ const mockBid: any = {
 	bidType: 'Averted',
 	bid: 54000n * 10n ** 18n,
 	price: 45000n * 10n ** 28n,
-	filledSize: 12n * 10n ** 7n,  // 1.2 WBTC
+	filledSize: 12n * 10n ** 7n, // 1.2 WBTC
 	acquiredCollateral: 12n * 10n ** 7n,
 	challengeSize: 15n * 10n ** 7n, // 1.5 WBTC
 };
@@ -303,22 +306,52 @@ const mockDailyNow: any = {
 // Supply keys are seconds; we need entries clearly before each 'date' string in the daily logs
 // Use keys that are a few days older than the daily log dates so the filter finds them
 const keyBefore = now - 35 * 86400; // 35 days ago
-const keyAfter = now - 1 * 86400;   // yesterday
+const keyAfter = now - 1 * 86400; // yesterday
 const mockSupply: any = {
 	[keyBefore]: { supply: 1_100_000, created: keyBefore, allocation: {} },
 	[keyAfter]: { supply: 1_200_000, created: keyAfter, allocation: {} },
 };
 
+// Optimism CCIP chain selector
+const CCIP_SELECTOR_OPTIMISM = '3734403246176062136';
+
+const mockCCIPProposal: any = {
+	chainId: 1,
+	hash: TX_HASH,
+	proposer: ADDR_SUGGEST,
+	type: 'AddChain',
+	deadline: now + 7 * 24 * 3600,
+	status: 'Pending',
+	details: JSON.stringify({ remoteChainSelector: CCIP_SELECTOR_OPTIMISM, chain: CCIP_SELECTOR_OPTIMISM, remoteTokenAddress: ADDR_COL }),
+	created: now - 3600,
+	txHash: TX_HASH,
+	deniedAt: null,
+	deniedTxHash: null,
+	enactedAt: null,
+	enactedTxHash: null,
+};
+
+const mockCCIPChain: any = {
+	chainId: 1,
+	remoteChainSelector: CCIP_SELECTOR_OPTIMISM,
+	active: true,
+	remoteTokenAddress: ADDR_COL,
+	outboundEnabled: true,
+	outboundCapacity: (1_000_000n * 10n ** 18n).toString(),
+	outboundRate: (10n * 10n ** 18n).toString(),
+	inboundEnabled: true,
+	inboundCapacity: (500_000n * 10n ** 18n).toString(),
+	inboundRate: (5n * 10n ** 18n).toString(),
+	rateLimitUpdatedAt: now - 1800,
+	rateLimitTxHash: TX_HASH,
+};
+
 // ---------------------------------------------------------------------------
 // Messages to send
 // ---------------------------------------------------------------------------
-const handles = ['/MintingUpdates', '/PriceAlerts', '/WeeklyInfos', '/help'];
-const chatSubs = { MintingUpdates: true, PriceAlerts: false, WeeklyInfos: true };
-
 const messages: Array<{ label: string; text: string }> = [
-	{ label: 'WelcomeGroup', text: WelcomeGroupMessage(CHAT_ID, handles) },
-	{ label: 'Help', text: HelpMessage(handles, chatSubs) },
-	{ label: 'StartUp', text: StartUpMessage(handles) },
+	{ label: 'WelcomeGroup', text: WelcomeGroupMessage(CHAT_ID) },
+	{ label: 'Help', text: HelpMessage(CHAT_ID) },
 	{ label: 'MinterProposal', text: MinterProposalMessage(mockMinter) },
 	{ label: 'MinterProposalVetoed', text: MinterProposalVetoedMessage(mockMinter) },
 	{ label: 'LeadrateProposal', text: LeadrateProposalMessage(mockLeadrateProposal, [mockLeadrateRate]) },
@@ -337,6 +370,13 @@ const messages: Array<{ label: string; text: string }> = [
 	{ label: 'EquityInvested', text: EquityInvestedMessage(mockEquityLog) },
 	{ label: 'EquityRedeemed', text: EquityRedeemedMessage({ ...mockEquityLog, kind: 'Equity:Redeemed' }) },
 	{ label: 'WeeklyInfos', text: WeeklyInfosMessage(mockDailyBefore, mockDailyNow, mockSupply) },
+	{ label: 'CCIPProposal (AddChain)', text: CCIPProposalMessage(mockCCIPProposal) },
+	{ label: 'CCIPProposalDenied', text: CCIPProposalDeniedMessage({ ...mockCCIPProposal, deniedAt: now - 600, deniedTxHash: TX_HASH }) },
+	{
+		label: 'CCIPProposalEnacted',
+		text: CCIPProposalEnactedMessage({ ...mockCCIPProposal, enactedAt: now - 600, enactedTxHash: TX_HASH }),
+	},
+	{ label: 'CCIPRateLimit', text: CCIPRateLimitMessage(mockCCIPChain) },
 ];
 
 // ---------------------------------------------------------------------------
