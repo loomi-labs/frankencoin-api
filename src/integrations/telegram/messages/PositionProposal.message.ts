@@ -34,5 +34,5 @@ export function PositionProposalMessage(position: PositionQuery): string {
    Expiry: *${expiryDays} days*
 
 [⚔️ Challenge](${AppUrl(`/monitoring/${position.position}/challenge`)}) · [🚫 Veto](${AppUrl(`/governance`)})
-[🔍 Position](${ExplorerAddressUrl(position.position)}) · [🔍 Owner](${ExplorerAddressUrl(position.owner)})`;
+[🔍 Position](${ExplorerAddressUrl(position.position)}) · [🔍 Owner](${ExplorerAddressUrl(position.owner)}) · [🔍 Collateral](${ExplorerAddressUrl(position.collateral)})`;
 }
