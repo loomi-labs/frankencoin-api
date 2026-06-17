@@ -118,7 +118,7 @@ export class PricesService {
 	}
 
 	getCollateral(): ApiPriceERC20Mapping {
-		const pos = Object.values(this.positionsService.getPositionsList().list);
+		const pos = Object.values(this.positionsService.getPositionsOpen().map);
 		const c: ERC20InfoObjectArray = {};
 
 		for (const p of pos) {
@@ -394,6 +394,15 @@ export class PricesService {
 		for (const addr of Object.keys(this.fetchedPrices)) {
 			// break out if zchf price is not available
 			if (zchfPrice == undefined) break;
+
+			// static conversion for CHFAU, since no price feeds are available
+			if (normalizeAddress(addr) == normalizeAddress(ADDRESS[mainnet.id].chfauToken)) {
+				this.fetchedPrices[addr].price = {
+					chf: 1,
+					usd: zchfPrice,
+				};
+				continue;
+			}
 
 			// calculate chf value for erc token
 			if (this.fetchedPrices[addr]?.timestamp > 0) {

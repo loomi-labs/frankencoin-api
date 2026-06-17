@@ -11,7 +11,7 @@ import { formatFloat, normalizeAddress, timestampStartOfDay } from 'utils/format
 import { EcosystemFpsService } from 'modules/ecosystem/ecosystem.fps.service';
 import { VIEM_CONFIG } from 'app.config';
 import { mainnet } from 'viem/chains';
-import { ADDRESS, StablecoinBridgeABI } from '@frankencoin/zchf';
+import { ADDRESS, StablecoinBridgeV2ABI } from '@frankencoin/zchf';
 
 @Injectable()
 export class PricesHistoryService implements OnModuleInit {
@@ -285,18 +285,18 @@ export class PricesHistoryService implements OnModuleInit {
 			};
 		});
 
-		const stablecoinBridgeVCHF = normalizeAddress(ADDRESS[mainnet.id].stablecoinBridgeVCHF);
+		const stablecoinBridgeCHFAU = normalizeAddress(ADDRESS[mainnet.id].stablecoinBridgeCHFAU);
 		const stablecoinBridges = [
 			{
 				minted: formatFloat(
 					await VIEM_CONFIG[mainnet.id].readContract({
-						address: stablecoinBridgeVCHF,
-						abi: StablecoinBridgeABI,
+						address: stablecoinBridgeCHFAU,
+						abi: StablecoinBridgeV2ABI,
 						functionName: 'minted',
 					}),
 					18
 				),
-				marketPrice: this.fetchedHistory[stablecoinBridgeVCHF]?.price?.chf || 0,
+				marketPrice: this.fetchedHistory[stablecoinBridgeCHFAU]?.price?.chf || 0,
 				liqPrice: 1,
 			},
 		];
