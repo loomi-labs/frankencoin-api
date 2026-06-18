@@ -39,4 +39,4 @@ docker run --rm \
     -d "$TARGET_DB" \
     "/backup/${DUMP_FILE}"
 
-echo "Done. Run --reset-sync on the target database before starting ponder."
+echo "Done."
