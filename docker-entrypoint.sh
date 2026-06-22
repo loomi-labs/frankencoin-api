@@ -7,7 +7,7 @@ set -e
 # the supported approach. Idempotent on re-runs.
 if [ "${DISABLE_DATABASE:-false}" != "true" ]; then
     echo "→ Running prisma db push"
-    npx prisma db push --schema=./prisma/schema.prisma --accept-data-loss
+    npx prisma db push --schema=./prisma/schema --accept-data-loss
 fi
 
 exec "$@"
