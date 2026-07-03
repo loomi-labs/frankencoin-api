@@ -8,7 +8,8 @@ export function CCIPRateLimitMessage(chain: ApiCCIPChain): string {
 	const localChainName = localChain?.name;
 	const remoteChain = getChainByChainSelector(chain.remoteChainSelector);
 
-	const fmt = (wei: string) => parseFloat(formatUnits(BigInt(wei), 18)).toFixed(4);
+	const fmt = (wei: string) => parseFloat(formatUnits(BigInt(wei), 18)).toFixed(2);
+	const fmtPerHour = (wei: string) => (parseFloat(formatUnits(BigInt(wei), 18)) * 3600).toFixed(2);
 
 	const txLink = chain.rateLimitTxHash ? `[🔍 Transaction](${ExplorerTxUrl(chain.rateLimitTxHash, localChain as Chain)}) · ` : '';
 
@@ -17,8 +18,8 @@ export function CCIPRateLimitMessage(chain: ApiCCIPChain): string {
 🌐 Chain: *${localChainName}* (${chain.chainId})
 🔗 Remote: *${remoteChain?.name ?? 'unknown'}* (\`${chain.remoteChainSelector}\`)
 
-📤 Outbound: ${chain.outboundEnabled ? `*${fmt(chain.outboundCapacity)} ZCHF* cap · *${fmt(chain.outboundRate)} ZCHF/s*` : 'disabled'}
-📥 Inbound: ${chain.inboundEnabled ? `*${fmt(chain.inboundCapacity)} ZCHF* cap · *${fmt(chain.inboundRate)} ZCHF/s*` : 'disabled'}
+📤 Outbound: ${chain.outboundEnabled ? `*${fmt(chain.outboundCapacity)} ZCHF* cap · *${fmtPerHour(chain.outboundRate)} ZCHF/h*` : 'no limit'}
+📥 Inbound: ${chain.inboundEnabled ? `*${fmt(chain.inboundCapacity)} ZCHF* cap · *${fmtPerHour(chain.inboundRate)} ZCHF/h*` : 'no limit'}
 
 ${txLink}[🏛️ Governance](${AppUrl('/governance', localChain as Chain)})`;
 }

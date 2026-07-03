@@ -10,18 +10,21 @@ else
 fi
 
 if [ -z "$TARGET_DB" ] || [ -z "$DUMP_FILE" ]; then
-  echo "Usage: DATABASE_URL=postgresql://... ./scripts/db-restore.sh <dump-file>"
-  echo "   or: ./scripts/db-restore.sh postgresql://... <dump-file>"
+  echo "Usage: DATABASE_URL=postgresql://... yarn prisma:restore <dump-file>"
+  echo "   or: yarn prisma:restore postgresql://... <dump-file>"
   exit 1
 fi
 
-if [ ! -f "$DUMP_FILE" ]; then
-  echo "Error: dump file not found: $DUMP_FILE"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DUMP_PATH="${SCRIPT_DIR}/${DUMP_FILE}"
+
+if [ ! -f "$DUMP_PATH" ]; then
+  echo "Error: dump file not found: prisma/backup/${DUMP_FILE}"
   exit 1
 fi
 
-echo "Restoring ${DUMP_FILE} to target database..."
-echo "WARNING: This will overwrite existing data in the target database."
+echo "Restoring prisma/backup/${DUMP_FILE} to target database..."
+echo "WARNING: This will overwrite existing data."
 read -p "Proceed? [y/N] " confirm
 if [ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
   echo "Aborted."
@@ -29,8 +32,8 @@ if [ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
 fi
 
 docker run --rm \
-  -v "$(pwd):/backup" \
-  postgres:18 \
+  -v "${SCRIPT_DIR}:/backup" \
+  postgres:18.4 \
   pg_restore \
     --no-owner \
     --no-privileges \

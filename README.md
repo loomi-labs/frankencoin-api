@@ -1,53 +1,67 @@
-## Description
+## Frankencoin API
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Installation
+### Setup
 
 ```bash
-$ yarn install
+yarn install
+cp .env.example .env   # fill in values
 ```
 
-## create .env (see: .env.example)
+### Development
+
+```bash
+yarn infra:up   # start local docker stack
+yarn dev        # install deps + watch mode
+```
+
+### NPM package
+
+```bash
+# bump version in package.json first
+npm login
+yarn npm:build
+yarn npm:publish
+```
+
+### Database
+
+```bash
+# apply schema to deployment db (e.g. Railway)
+DATABASE_URL=postgresql://... yarn prisma:push
+
+# run a migration script
+DATABASE_URL=postgresql://... yarn migrate:subscriptions
+```
+
+### DB backup / restore
+
+```bash
+# dump to prisma/backup/
+DATABASE_URL=postgresql://... yarn prisma:backup
+
+# restore a dump from prisma/backup/
+DATABASE_URL=postgresql://... yarn prisma:restore backup_2026-06-24_12-00-00.dump
+```
+
+### Environment variables
 
 ```
 PORT=3030
 
 CONFIG_APP_URL=https://app.frankencoin.com
 CONFIG_INDEXER_URL=https://ponder.frankencoin.com
-CONFIG_CHAIN=mainnet
+CONFIG_BACKUP_INDEXER_URL=https://ponder.frankencoin.com
 
-RPC_URL_MAINNET=https://eth-mainnet.g.alchemy.com/v2/...
-RPC_URL_POLYGON=https://polygon-mainnet.g.alchemy.com/v2/...
+# Database configuration (optional - set DISABLE_DATABASE=true to skip)
+DATABASE_URL=postgresql://user:password@localhost:5432/frankencoin
+DISABLE_DATABASE=false
 
+ALCHEMY_RPC_KEY=...
 COINGECKO_API_KEY=CG-...
-
+TELEGRAM_BOT_NAME=...
 TELEGRAM_BOT_TOKEN=...
-
-STORJ_ACCESSKEY=...
-STORJ_SECRETACCESSKEY=...
-STORJ_BUCKET=frankencoin
-STORJ_REGION=EU1
-STORJ_ENDPOINT=https://gateway.storjshare.io
+JWT_SECRET=...
+THE_GRAPH_KEY=...
 ```
 
-## Running the app
-
-```bash
-# development
-$ yarn run start
-
-# watch mode
-$ yarn run start:dev
-
-# production mode
-$ yarn run start:prod
-
-# Publish NPM pkg (higher version) - needs login
-$ npm publish --access public
-```
-
-## License
-
-Nest is [MIT licensed](LICENSE).
-This repo is [MIT licensed](LICENSE).
+MIT licensed.

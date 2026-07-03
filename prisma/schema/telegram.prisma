@@ -8,6 +8,7 @@ model TelegramGroup {
   @@map("telegram_groups")
 }
 
+<<<<<<< HEAD
 // Telegram app ↔ bot link sessions (one per browser session, many per Telegram user/group)
 model TelegramSession {
   jti        String    @id
@@ -22,6 +23,11 @@ model TelegramSession {
 }
 
 // Personalized alerts per Telegram identity (user DM or group chat)
+=======
+// Personalized alerts per Telegram identity (user DM or group chat)
+// type: 'governance' | 'allPositions' | 'owner'
+// address: '' for governance/allPositions, owner address for owner type
+>>>>>>> upstream/main
 model TelegramUserAlert {
   id         String   @id @default(uuid())
   telegramId String

@@ -4,17 +4,17 @@ set -e
 DATABASE_URL="${DATABASE_URL:-$1}"
 
 if [ -z "$DATABASE_URL" ]; then
-  echo "Usage: DATABASE_URL=postgresql://... ./scripts/db-dump.sh"
-  echo "   or: ./scripts/db-dump.sh postgresql://..."
+  echo "Usage: DATABASE_URL=postgresql://... yarn prisma:backup"
   exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-OUTPUT="scripts/backup_${TIMESTAMP}.dump"
+FILENAME="backup_${TIMESTAMP}.dump"
 
-echo "Dumping database to ${OUTPUT}..."
+echo "Dumping database to prisma/backup/${FILENAME}..."
 docker run --rm \
-  -v "$(pwd):/backup" \
-  postgres:18 \
-  pg_dump "$DATABASE_URL" -Fc -f "/backup/backup_${TIMESTAMP}.dump"
-echo "Done. File: ${OUTPUT} ($(du -sh "$OUTPUT" | cut -f1))"
+  -v "${SCRIPT_DIR}:/backup" \
+  postgres:18.4 \
+  pg_dump "$DATABASE_URL" -Fc -f "/backup/${FILENAME}"
+echo "Done. ($(du -sh "${SCRIPT_DIR}/${FILENAME}" | cut -f1))"
