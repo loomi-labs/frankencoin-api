@@ -886,6 +886,7 @@ type ApiSavingsReferrerEarnings = {
     total: number;
 };
 
+type AlertType = 'governance' | 'allPositions' | 'owner';
 type TelegramState = {
     minterApplied: number;
     minterVetoed: number;

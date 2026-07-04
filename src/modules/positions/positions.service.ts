@@ -171,7 +171,18 @@ export class PositionsService {
 			const mintedDataPromises: Promise<bigint>[] = [];
 			const availableForClonesDataPromises: Promise<bigint>[] = [];
 
-			for (const p of items) {
+			// Ponder same-batch factory child event miss: when a position is opened and then acted on
+			// (e.g. denied) within the same ethGetLogsBlockRange window, Ponder silently drops the child
+			// contract events during a full re-index. Position 0xf35378277191c1f0d90869426f7177aa0393f77d
+			// was opened at block 25287288 and denied at block 25287602 — both inside window [25286536–25291535]
+			// — so after re-indexing it incorrectly shows denied: false. Filter it out until ponder is fixed
+			// or the indexer is backfilled. See: ponder/docs/ponder-factory-same-batch-miss.md
+			const PONDER_SAME_BATCH_MISS = new Set(['0xf35378277191c1f0d90869426f7177aa0393f77d']);
+			const filteredItems = items.filter((p) => !PONDER_SAME_BATCH_MISS.has(normalizeAddress(p.position)));
+			const openItems = filteredItems.filter((p) => !p.closed && !p.denied) as PositionQueryV1[];
+			const closedItems = filteredItems.filter((p) => p.closed || p.denied) as PositionQueryV1[];
+
+			for (const p of openItems) {
 				// Forces the collateral balance to be overwritten with the latest blockchain state, instead of the ponder state.
 				// This ensures that collateral transfers can be made without using the smart contract or application directly,
 				// and the API will be aware of the updated state.
@@ -208,8 +219,8 @@ export class PositionsService {
 			const mintedData = await Promise.allSettled(mintedDataPromises);
 			const availableForClonesData = await Promise.allSettled(availableForClonesDataPromises);
 
-			for (let idx = 0; idx < items.length; idx++) {
-				const p = items[idx] as PositionQueryV1;
+			for (let idx = 0; idx < openItems.length; idx++) {
+				const p = openItems[idx];
 				const b = (balanceOfData[idx] as PromiseFulfilledResult<bigint>).value;
 				const m = (mintedData[idx] as PromiseFulfilledResult<bigint>).value;
 				const a = (availableForClonesData[idx] as PromiseFulfilledResult<bigint>).value;
@@ -256,6 +267,49 @@ export class PositionsService {
 				};
 
 				list[normalizeAddress(p.position)] = entry;
+			}
+
+			for (const p of closedItems) {
+				list[normalizeAddress(p.position)] = {
+					version: 1,
+
+					position: getAddress(p.position),
+					owner: getAddress(p.owner),
+					zchf: getAddress(p.zchf),
+					collateral: getAddress(p.collateral),
+					price: p.price,
+
+					created: parseInt(p.created as any),
+					isOriginal: p.isOriginal,
+					isClone: p.isClone,
+					denied: p.denied,
+					denyDate: parseInt(p.denyDate as any),
+					closed: p.closed,
+					original: getAddress(p.original),
+
+					minimumCollateral: p.minimumCollateral,
+					annualInterestPPM: p.annualInterestPPM,
+					reserveContribution: p.reserveContribution,
+					start: parseInt(p.start as any),
+					cooldown: parseInt(p.cooldown as any),
+					expiration: parseInt(p.expiration as any),
+					challengePeriod: parseInt(p.challengePeriod as any),
+
+					zchfName: p.zchfName,
+					zchfSymbol: p.zchfSymbol,
+					zchfDecimals: p.zchfDecimals,
+
+					collateralName: p.collateralName,
+					collateralSymbol: p.collateralSymbol,
+					collateralDecimals: p.collateralDecimals,
+					collateralBalance: p.collateralBalance,
+
+					limitForPosition: p.limitForPosition,
+					limitForClones: p.limitForClones,
+					availableForPosition: p.availableForPosition,
+					availableForClones: p.availableForClones,
+					minted: p.minted,
+				};
 			}
 
 			const a = Object.keys(list).length;
@@ -351,7 +405,10 @@ export class PositionsService {
 				functionName: 'currentRatePPM',
 			});
 
-			for (const p of items) {
+			const openItems = items.filter((p) => !p.closed && !p.denied) as PositionQueryV2[];
+			const closedItems = items.filter((p) => p.closed || p.denied) as PositionQueryV2[];
+
+			for (const p of openItems) {
 				// Forces the collateral balance to be overwritten with the latest blockchain state, instead of the ponder state.
 				// This ensures that collateral transfers can be made without using the smart contract or application directly,
 				// and the API will be aware of the updated state.
@@ -398,8 +455,8 @@ export class PositionsService {
 			const clonesDate = await Promise.allSettled(availableForClonesDataPromises);
 			const mintingDate = await Promise.allSettled(availableForMintingDataPromises);
 
-			for (let idx = 0; idx < items.length; idx++) {
-				const p = items[idx] as PositionQueryV2;
+			for (let idx = 0; idx < openItems.length; idx++) {
+				const p = openItems[idx];
 				const b = (balanceOfData[idx] as PromiseFulfilledResult<bigint>).value;
 				const m = (mintedData[idx] as PromiseFulfilledResult<bigint>).value;
 				const ac = (clonesDate[idx] as PromiseFulfilledResult<bigint>).value;
@@ -453,6 +510,57 @@ export class PositionsService {
 				};
 
 				list[normalizeAddress(p.position)] = entry;
+			}
+
+			for (const p of closedItems) {
+				const b = BigInt(p.collateralBalance);
+				const m = BigInt(p.minted);
+				const limitForPosition = (b * BigInt(p.price)) / BigInt(10 ** p.zchfDecimals);
+				const availableForPosition = limitForPosition - m;
+
+				list[normalizeAddress(p.position)] = {
+					version: 2,
+
+					position: getAddress(p.position),
+					owner: getAddress(p.owner),
+					zchf: getAddress(p.zchf),
+					collateral: getAddress(p.collateral),
+					price: p.price,
+
+					created: parseInt(p.created as any),
+					isOriginal: p.isOriginal,
+					isClone: p.isClone,
+					denied: p.denied,
+					denyDate: parseInt(p.denyDate as any),
+					closed: p.closed,
+					original: getAddress(p.original),
+					parent: getAddress(p.parent),
+
+					minimumCollateral: p.minimumCollateral,
+					annualInterestPPM: leadrate + p.riskPremiumPPM,
+					riskPremiumPPM: p.riskPremiumPPM,
+					reserveContribution: p.reserveContribution,
+					start: parseInt(p.start as any),
+					cooldown: parseInt(p.cooldown as any),
+					expiration: parseInt(p.expiration as any),
+					challengePeriod: parseInt(p.challengePeriod as any),
+
+					zchfName: p.zchfName,
+					zchfSymbol: p.zchfSymbol,
+					zchfDecimals: p.zchfDecimals,
+
+					collateralName: p.collateralName,
+					collateralSymbol: p.collateralSymbol,
+					collateralDecimals: p.collateralDecimals,
+					collateralBalance: p.collateralBalance,
+
+					limitForPosition: limitForPosition.toString(),
+					limitForClones: p.limitForClones,
+					availableForClones: p.availableForClones,
+					availableForMinting: p.availableForMinting,
+					availableForPosition: availableForPosition.toString(),
+					minted: p.minted,
+				};
 			}
 
 			const a = Object.keys(list).length;

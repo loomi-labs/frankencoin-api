@@ -462,9 +462,13 @@ export class TelegramService {
 
 	async removeTelegramGroup(id: number | string): Promise<boolean> {
 		if (!id) return false;
-		const result = await this.prisma.safeExecute(() => this.prisma.telegramGroup.deleteMany({ where: { chatId: id.toString() } }));
+		const chatId = id.toString();
+		const result = await this.prisma.safeExecute(() => this.prisma.telegramGroup.deleteMany({ where: { chatId } }));
 		const removed = (result?.count ?? 0) > 0;
-		if (removed) this.logger.log(`Removed Telegram Group: ${id}`);
+		if (removed) {
+			this.logger.log(`Removed Telegram Group: ${id}`);
+			await this.prisma.safeExecute(() => this.prisma.telegramUserAlert.deleteMany({ where: { telegramId: chatId } }));
+		}
 		return removed;
 	}
 
